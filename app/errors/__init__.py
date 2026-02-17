@@ -1,18 +1,39 @@
-"""Cross-cutting error handling module for the Agent & Orchestration Engine.
+"""Cross-cutting error handling package for the Agent & Orchestration Engine.
 
-Provides centralized error handler classes for LLM integration errors,
-agent processing errors, and workflow lifecycle errors, along with
-custom exception types used throughout the platform.
+This package provides centralized error handling for the three major error
+domains of the platform:
 
-Exports:
-    LLMErrorHandler      — Handles LLM API errors (rate limits, timeouts,
-                           auth failures) with retry/fallback/escalation.
-    AgentErrorHandler    — Handles agent work processing errors with
-                           retry/skip/escalation strategies.
-    WorkflowErrorHandler — Handles workflow-level errors with retry
-                           queuing and failure notification.
-    LLMError             — Custom exception for LLM-specific errors.
-    DatabaseError        — Custom exception for database-specific errors.
+* **LLMErrorHandler** — Handles LLM API errors (rate limits, timeouts,
+  authentication failures) with retry, fallback to cheaper models, and
+  escalation strategies.
+* **AgentErrorHandler** — Handles agent work-item processing errors with
+  automatic skip (validation errors), retry (LLM/unknown errors up to budget),
+  and escalation (database errors).
+* **WorkflowErrorHandler** — Handles workflow lifecycle errors with up to 3
+  retries via the orchestrator, then failure notification through monitoring.
+
+All handlers use ``structlog`` for structured JSON logging to stdout — no file
+handlers, no Prometheus / Grafana / APM integration (per AAP Section 0.7.6).
+
+This module is part of the cross-cutting error handling layer (Group 9 in
+AAP Section 0.5.1).  Handler instances are injected via constructors where
+needed (per AAP Section 0.7.1).
+
+Additionally re-exports the two custom exception types defined in
+:mod:`app.errors.error_handlers` for convenience:
+
+* **LLMError** — Raised when an LLM completion fails irrecoverably.
+* **DatabaseError** — Raised on persistent Redis / data-store failures.
+
+Usage::
+
+    from app.errors import LLMErrorHandler, AgentErrorHandler, WorkflowErrorHandler
+
+References:
+    - README.md lines 1496–1646 (Error Handling Specification)
+    - AAP Section 0.5.1 Group 9 (Cross-cutting Error Handling)
+    - AAP Section 0.7.1 (Constructor injection)
+    - AAP Section 0.7.6 (structlog logging standard)
 """
 
 from app.errors.error_handlers import (
@@ -27,6 +48,4 @@ __all__ = [
     "LLMErrorHandler",
     "AgentErrorHandler",
     "WorkflowErrorHandler",
-    "LLMError",
-    "DatabaseError",
 ]
