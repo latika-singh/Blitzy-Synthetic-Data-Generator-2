@@ -1,27 +1,45 @@
-# Synthetic ERP Data Generation Platform - Project 2
-# Production Dependencies
+# =============================================================================
+# Synthetic ERP Data Generation Platform — Project 2
+# Agent & Orchestration Engine — Production Dependencies
+# =============================================================================
+# This file lists all 13 production packages required by the engine.
+# Dev/test dependencies are in requirements-dev.txt.
+# Version specifiers sourced from the project specification (README.md).
+# =============================================================================
 
+# -----------------------------------------------------------------------------
 # LLM Provider SDKs
-anthropic>=0.79.0
-openai>=2.20.0
+# -----------------------------------------------------------------------------
+anthropic>=0.79.0          # Anthropic Claude API async client (AsyncAnthropic) for LLM completions
+openai>=2.20.0             # OpenAI / Azure OpenAI async client (AsyncOpenAI) for LLM completions
 
+# -----------------------------------------------------------------------------
 # Async and Networking
-aiohttp>=3.9.0
+# -----------------------------------------------------------------------------
+aiohttp>=3.9.0             # Async HTTP client for Project 1 REST API integration
 
+# -----------------------------------------------------------------------------
 # Data Storage
-redis>=7.0.0
+# -----------------------------------------------------------------------------
+redis>=7.0.0               # Redis client for caching, LLM queue (Streams), event store, agent state
 
+# -----------------------------------------------------------------------------
 # Scientific Computing
-numpy>=1.26.0
-scipy>=1.12.0
+# -----------------------------------------------------------------------------
+numpy>=1.26.0              # Array operations, random state seeding for reproducible simulations
+scipy>=1.12.0              # Statistical distributions: lognorm, norm, poisson, pareto via scipy.stats
 
+# -----------------------------------------------------------------------------
 # Data Generation and Utilities
-faker>=22.0.0
-pydantic>=2.5.0
-structlog>=24.1.0
-python-dateutil>=2.8.0
-holidays>=0.40
-tenacity>=8.2.0
+# -----------------------------------------------------------------------------
+faker>=22.0.0              # Synthetic data generation with custom ERP providers
+pydantic>=2.5.0            # Data validation at all subsystem boundaries (V2 with BaseModel)
+structlog>=24.1.0          # Structured JSON logging to stdout
+python-dateutil>=2.8.0     # Date arithmetic, relative deltas for business calendar operations
+holidays>=0.40             # US Federal holiday calendar (2024-2026)
+tenacity>=8.2.0            # Retry with exponential backoff for LLM API calls
 
-# ML/Embeddings
-sentence-transformers>=2.3.0
+# -----------------------------------------------------------------------------
+# ML / Embeddings
+# -----------------------------------------------------------------------------
+sentence-transformers>=2.3.0  # Local all-MiniLM-L6-v2 embeddings for agent memory semantic retrieval
