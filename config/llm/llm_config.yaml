@@ -1,0 +1,208 @@
+# =============================================================================
+# LLM Provider Configuration — Agent & Orchestration Engine (Project 2)
+# =============================================================================
+#
+# Central configuration for the LLM integration subsystem (Feature F-002).
+# Consumed at startup by:
+#   - app/llm/llm_config.py (via LLMConfig.from_yaml())
+#   - app/llm/llm_client.py (provider, model, retry, defaults)
+#   - app/llm/llm_queue.py (queue settings, circuit breaker)
+#   - app/llm/llm_monitor.py (budget, pricing, alerts)
+#   - app/llm/prompt_manager.py (prompt settings)
+#
+# Environment variable overrides (take precedence over values in this file):
+#   LLM_PROVIDER, LLM_MODEL, LLM_FALLBACK_MODEL, LLM_API_KEY,
+#   LLM_MAX_TOKENS, LLM_TEMPERATURE, REDIS_URL
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Provider Selection
+# ---------------------------------------------------------------------------
+# Default LLM provider selection.
+# Supported values: anthropic, openai, azure_openai
+# Can be overridden by LLM_PROVIDER environment variable.
+provider: anthropic
+
+# ---------------------------------------------------------------------------
+# Model Configuration
+# ---------------------------------------------------------------------------
+models:
+  # Primary model for complex decisions (invoice processing, approvals,
+  # exception handling, reconciliation).
+  # Can be overridden by LLM_MODEL environment variable.
+  primary: "claude-sonnet-4-20250514"
+
+  # Fallback model used when the primary model fails persistently or for
+  # simpler decisions (descriptions, basic matching).
+  # Can be overridden by LLM_FALLBACK_MODEL environment variable.
+  fallback: "claude-haiku-4-20250514"
+
+# ---------------------------------------------------------------------------
+# Supported Models by Provider
+# ---------------------------------------------------------------------------
+supported_models:
+  anthropic:
+    - "claude-sonnet-4-20250514"
+    - "claude-haiku-4-20250514"
+  openai:
+    - "gpt-4-turbo"
+    - "gpt-3.5-turbo"
+  azure_openai:
+    - "gpt-4-turbo"
+    - "gpt-3.5-turbo"
+
+# ---------------------------------------------------------------------------
+# Default Completion Parameters
+# ---------------------------------------------------------------------------
+defaults:
+  # Maximum tokens per LLM completion response.
+  # Can be overridden by LLM_MAX_TOKENS environment variable.
+  max_tokens: 1000
+
+  # Sampling temperature (0.0 = deterministic, 2.0 = maximum randomness).
+  # Can be overridden by LLM_TEMPERATURE environment variable.
+  temperature: 0.7
+
+  # Per-request timeout in seconds.
+  # Ref: README.md line 1778 — "LLM completion request: 30 seconds"
+  request_timeout_seconds: 30
+
+# ---------------------------------------------------------------------------
+# Rate Limits (requests per minute)
+# ---------------------------------------------------------------------------
+# Per-provider, per-model rate limits.
+# Ref: README.md lines 1881-1889
+rate_limits:
+  anthropic:
+    "claude-sonnet-4": 50         # 50 requests per minute
+    "claude-haiku-4": 100         # 100 requests per minute
+  openai:
+    "gpt-4-turbo": 500            # 500 requests per minute
+    "gpt-3.5-turbo": 3500         # 3500 requests per minute
+
+# ---------------------------------------------------------------------------
+# Budget Controls
+# ---------------------------------------------------------------------------
+# Hard monthly budget enforcement — the LLMBudgetManager blocks ALL requests
+# once the budget is exhausted (not merely a warning).
+budget:
+  # Monthly budget in USD.
+  monthly_limit_usd: 100.0
+
+  # Warning threshold as a fraction of monthly_limit_usd (0.80 = 80% = $80).
+  warning_threshold: 0.80
+
+  # Block threshold as a fraction of monthly_limit_usd (1.0 = 100% = $100).
+  # CRITICAL: This is a HARD STOP — all requests are blocked when exceeded.
+  block_threshold: 1.0
+
+# ---------------------------------------------------------------------------
+# Pricing (cost per 1 million tokens, in USD)
+# ---------------------------------------------------------------------------
+# Ref: README.md lines 1157-1162, lines 263-265
+pricing:
+  "claude-sonnet-4-20250514":
+    input_per_1m_tokens: 3.0
+    output_per_1m_tokens: 15.0
+  "claude-haiku-4-20250514":
+    input_per_1m_tokens: 0.25
+    output_per_1m_tokens: 1.25
+  "gpt-4-turbo":
+    input_per_1m_tokens: 10.0
+    output_per_1m_tokens: 30.0
+  "gpt-3.5-turbo":
+    input_per_1m_tokens: 0.5
+    output_per_1m_tokens: 1.5
+
+# ---------------------------------------------------------------------------
+# Retry Configuration
+# ---------------------------------------------------------------------------
+# Exponential backoff via tenacity for transient LLM API failures.
+# Ref: README.md lines 1015-1018 — stop_after_attempt(3),
+#      wait_exponential(multiplier=1, min=2, max=10), reraise=True
+# Effective backoff sequence: ~2 s, ~4 s, ~10 s
+retry:
+  # Maximum number of retry attempts before giving up.
+  max_attempts: 3
+
+  # Exponential backoff parameters (seconds).
+  backoff:
+    multiplier: 1
+    min_seconds: 2
+    max_seconds: 10
+
+  # Whether to reraise the last exception after all retries are exhausted.
+  reraise: true
+
+# ---------------------------------------------------------------------------
+# Circuit Breaker Configuration
+# ---------------------------------------------------------------------------
+# Ref: README.md line 238 — "Circuit breaker (open after 5 consecutive failures)"
+circuit_breaker:
+  # Number of consecutive failures before the circuit opens.
+  failure_threshold: 5
+
+  # Seconds to wait in open state before attempting recovery (half-open).
+  recovery_timeout_seconds: 60
+
+  # Number of successful requests in half-open state required to close circuit.
+  success_threshold: 2
+
+# ---------------------------------------------------------------------------
+# Queue Configuration (Redis Streams)
+# ---------------------------------------------------------------------------
+# Ref: README.md lines 1988-1999, AAP Section 0.4.1 / 0.4.4
+queue:
+  # Maximum number of pending LLM requests in the queue.
+  max_size: 1000
+
+  # Maximum requests to process in a single batch.
+  batch_size: 10
+
+  # Queue depth at which to issue a capacity warning (80% of max_size).
+  warning_threshold: 800
+
+  # Time in seconds after which a queued request expires.
+  timeout_seconds: 300
+
+  # Redis TTL for individual queue items (1 hour).
+  item_ttl_seconds: 3600
+
+  # Redis stream name for the LLM request queue.
+  stream_name: "llm_requests"
+
+  # Redis consumer group name.
+  consumer_group: "llm_workers"
+
+  # Behaviour when the queue is full.
+  on_queue_full: "reject_new_requests"
+
+  # Whether critical-priority requests may bypass the queue limit.
+  priority_override: true
+
+# ---------------------------------------------------------------------------
+# Monitoring & Alerts
+# ---------------------------------------------------------------------------
+alerts:
+  # Latency threshold (seconds) above which to trigger a high-latency alert.
+  # Ref: README.md line 269 — "High latency (> 10s)"
+  high_latency_threshold_seconds: 10.0
+
+  # Error rate threshold (fraction) above which to trigger a high-error alert.
+  # Ref: README.md line 270 — "High error rate (> 5%)"
+  high_error_rate_threshold: 0.05
+
+# ---------------------------------------------------------------------------
+# Prompt Configuration
+# ---------------------------------------------------------------------------
+prompts:
+  # Directory containing YAML prompt templates (relative to project root).
+  template_directory: "prompts"
+
+  # Target token budget per assembled prompt (input tokens).
+  # Ref: AAP Section 0.1.1 — "~1,500 token context budget"
+  token_budget: 1500
+
+  # Approximate characters per token for token estimation.
+  # Ref: AAP — "4 chars ≈ 1 token"
+  chars_per_token: 4
