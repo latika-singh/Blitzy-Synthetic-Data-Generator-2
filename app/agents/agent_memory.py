@@ -39,6 +39,7 @@ References:
 """
 
 import asyncio
+import inspect
 import time
 import json
 import numpy as np
@@ -782,10 +783,7 @@ class AgentMemory:
         obs_key = f"{prefix}:{agent_str}:observations"
         obs_data = json.dumps([obs.to_dict() for obs in self._observations])
         try:
-            if asyncio.iscoroutinefunction(getattr(redis, "set", None)):
-                await redis.set(obs_key, obs_data, ex=ttl_seconds)
-            else:
-                redis.set(obs_key, obs_data, ex=ttl_seconds)
+            await self._maybe_await(redis.set(obs_key, obs_data, ex=ttl_seconds))
         except Exception as exc:
             logger.warning(
                 "redis_set_observations_failed",
@@ -797,10 +795,7 @@ class AgentMemory:
         ref_key = f"{prefix}:{agent_str}:reflections"
         ref_data = json.dumps([ref.to_dict() for ref in self._reflections])
         try:
-            if asyncio.iscoroutinefunction(getattr(redis, "set", None)):
-                await redis.set(ref_key, ref_data, ex=ttl_seconds)
-            else:
-                redis.set(ref_key, ref_data, ex=ttl_seconds)
+            await self._maybe_await(redis.set(ref_key, ref_data, ex=ttl_seconds))
         except Exception as exc:
             logger.warning(
                 "redis_set_reflections_failed",
@@ -814,10 +809,7 @@ class AgentMemory:
         if emb_matrix is not None:
             emb_bytes = emb_matrix.astype(np.float32).tobytes()
             try:
-                if asyncio.iscoroutinefunction(getattr(redis, "set", None)):
-                    await redis.set(emb_key, emb_bytes, ex=ttl_seconds)
-                else:
-                    redis.set(emb_key, emb_bytes, ex=ttl_seconds)
+                await self._maybe_await(redis.set(emb_key, emb_bytes, ex=ttl_seconds))
             except Exception as exc:
                 logger.warning(
                     "redis_set_embeddings_failed",
@@ -841,10 +833,7 @@ class AgentMemory:
         # --- Observations ---
         obs_key = f"{prefix}:{agent_str}:observations"
         try:
-            if asyncio.iscoroutinefunction(getattr(redis, "get", None)):
-                obs_raw = await redis.get(obs_key)
-            else:
-                obs_raw = redis.get(obs_key)
+            obs_raw = await self._maybe_await(redis.get(obs_key))
 
             if obs_raw is not None:
                 if isinstance(obs_raw, bytes):
@@ -863,10 +852,7 @@ class AgentMemory:
         # --- Reflections ---
         ref_key = f"{prefix}:{agent_str}:reflections"
         try:
-            if asyncio.iscoroutinefunction(getattr(redis, "get", None)):
-                ref_raw = await redis.get(ref_key)
-            else:
-                ref_raw = redis.get(ref_key)
+            ref_raw = await self._maybe_await(redis.get(ref_key))
 
             if ref_raw is not None:
                 if isinstance(ref_raw, bytes):
@@ -885,10 +871,7 @@ class AgentMemory:
         # --- Embeddings (binary) ---
         emb_key = f"{prefix}:{agent_str}:embeddings"
         try:
-            if asyncio.iscoroutinefunction(getattr(redis, "get", None)):
-                emb_raw = await redis.get(emb_key)
-            else:
-                emb_raw = redis.get(emb_key)
+            emb_raw = await self._maybe_await(redis.get(emb_key))
 
             if emb_raw is not None:
                 if isinstance(emb_raw, str):
@@ -923,6 +906,18 @@ class AgentMemory:
     def _is_redis_enabled(self) -> bool:
         """Check whether Redis persistence is enabled and a client is set."""
         return self._redis is not None and self.config.enable_redis_persistence
+
+    @staticmethod
+    async def _maybe_await(result: Any) -> Any:
+        """Await *result* if it is a coroutine or awaitable, else return it.
+
+        This handles both truly ``async def`` Redis methods and wrapper
+        methods (e.g. fakeredis) that return awaitables without being
+        flagged by ``asyncio.iscoroutinefunction``.
+        """
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     def _should_cleanup(self) -> bool:
         """Determine whether the cleanup interval has elapsed."""
