@@ -1,0 +1,13 @@
+# Synthetic ERP Data Generation Platform - Project 2
+# Development and Testing Dependencies
+
+-r requirements.txt
+
+# Testing Framework
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+
+# Test Mocks
+fakeredis>=2.21.0
+aioresponses>=0.7.6
