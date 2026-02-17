@@ -1,0 +1,133 @@
+# =============================================================================
+# Approval Thresholds Configuration
+# =============================================================================
+#
+# Purpose:
+#   Defines monetary approval chains for three transaction types used by the
+#   ApprovalSystem (app/orchestration/approval_system.py). Loaded at system
+#   initialization to determine when and from whom approval is required based
+#   on transaction amounts.
+#
+# Consuming module: app/orchestration/approval_system.py
+# Specification reference: README.md lines 309-331
+#
+# Threshold rules:
+#   - Each transaction type has an ordered list of threshold tiers
+#   - Tiers are listed in ascending order of min_amount
+#   - Boundaries are contiguous: max_amount of tier N == min_amount of tier N+1
+#   - null for max_amount means unbounded (no upper limit)
+#   - null for required_approver_role means no approval is needed for that tier
+#   - All monetary values are integers representing US dollar amounts
+#
+# Approver role names must match the agent role identifiers defined in
+# config/agents/agent_roles.yaml and the specialized agent implementations:
+#   - purchasing_manager  (app/agents/specialized/purchasing_manager_agent.py)
+#   - ap_manager          (app/agents/specialized/ap_manager_agent.py)
+#   - senior_accountant   (app/agents/specialized/senior_accountant_agent.py)
+#   - controller          (app/agents/specialized/controller_agent.py)
+#   - cfo                 (app/agents/specialized/cfo_agent.py)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Purchase Order Approval Thresholds
+# -----------------------------------------------------------------------------
+# Approval chain for purchase orders (PO).
+# Source: README.md lines 315-319, AAP Section 0.5.1 Group 6
+#
+# Tier breakdown:
+#   - Below $5,000:           No approval required
+#   - $5,000 to $24,999:      Purchasing Manager approval
+#   - $25,000 to $99,999:     Controller approval
+#   - $100,000 and above:     CFO approval
+# -----------------------------------------------------------------------------
+purchase_order:
+  thresholds:
+    - min_amount: 0
+      max_amount: 5000
+      required_approver_role: null
+
+    - min_amount: 5000
+      max_amount: 25000
+      required_approver_role: "purchasing_manager"
+
+    - min_amount: 25000
+      max_amount: 100000
+      required_approver_role: "controller"
+
+    - min_amount: 100000
+      max_amount: null
+      required_approver_role: "cfo"
+
+# -----------------------------------------------------------------------------
+# Vendor Invoice Approval Thresholds
+# -----------------------------------------------------------------------------
+# Approval chain for vendor invoices.
+# Source: README.md lines 321-326, AAP Section 0.5.1 Group 6
+#
+# Tier breakdown:
+#   - Below $10,000:          No approval required
+#   - $10,000 to $49,999:     AP Manager approval
+#   - $50,000 to $99,999:     Controller approval
+#   - $100,000 and above:     CFO approval
+# -----------------------------------------------------------------------------
+vendor_invoice:
+  thresholds:
+    - min_amount: 0
+      max_amount: 10000
+      required_approver_role: null
+
+    - min_amount: 10000
+      max_amount: 50000
+      required_approver_role: "ap_manager"
+
+    - min_amount: 50000
+      max_amount: 100000
+      required_approver_role: "controller"
+
+    - min_amount: 100000
+      max_amount: null
+      required_approver_role: "cfo"
+
+# -----------------------------------------------------------------------------
+# Journal Entry Approval Thresholds
+# -----------------------------------------------------------------------------
+# Approval chain for journal entries (JE).
+# Source: README.md lines 327-330, AAP Section 0.5.1 Group 6
+#
+# NOTE: Unlike purchase orders and vendor invoices, journal entries ALWAYS
+# require approval — there is no tier with a null approver role.
+#
+# Tier breakdown:
+#   - Below $50,000:          Senior Accountant approval
+#   - $50,000 and above:      Controller approval
+# -----------------------------------------------------------------------------
+journal_entry:
+  thresholds:
+    - min_amount: 0
+      max_amount: 50000
+      required_approver_role: "senior_accountant"
+
+    - min_amount: 50000
+      max_amount: null
+      required_approver_role: "controller"
+
+# -----------------------------------------------------------------------------
+# Approval Workflow Settings
+# -----------------------------------------------------------------------------
+# Global configuration for the approval workflow behavior.
+# These settings apply across all transaction types.
+# Source: AAP Section 0.5.1 Group 6, timing_models specification
+# -----------------------------------------------------------------------------
+approval_workflow:
+  # Whether a rejection should escalate the approval request to the next
+  # higher tier's approver for secondary review
+  escalation_on_rejection: true
+
+  # Default time limit (in hours) for a pending approval request before
+  # it is flagged as overdue. Based on approval processing time model:
+  # Normal(mu=4hrs, sigma=2hrs) — 24 hours provides a generous SLA.
+  default_approval_timeout_hours: 24
+
+  # Maximum depth of chained approvals (e.g., clerk -> manager -> controller).
+  # Prevents infinite escalation loops in the approval chain.
+  max_approval_chain_depth: 3
