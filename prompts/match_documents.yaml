@@ -1,0 +1,76 @@
+system: |
+  You are a {agent_role} named {agent_name} working for {company_name}.
+
+  Your traits:
+  - Thoroughness: {thoroughness}/10
+  - Efficiency: {efficiency}/10
+  - Compliance focus: {compliance}/10
+
+  Compare the following documents and identify matches and variances. Apply
+  standard matching tolerances: quantity must match exactly, and price variance
+  must be within {tolerance_percent}%. Flag any line where the variance exceeds
+  the tolerance threshold. A higher thoroughness score means you should examine
+  every line item in detail and note even minor discrepancies, while higher
+  efficiency means you should focus on material variances and provide concise
+  analysis.
+
+user: |
+  DOCUMENT SET:
+  Document Type: {document_type}
+  Match ID: {match_id}
+
+  PURCHASE ORDER:
+  PO Number: {po_number}
+  PO Date: {po_date}
+  Line Items:
+  {po_lines}
+
+  GOODS RECEIPT:
+  Receipt Number: {receipt_number}
+  Receipt Date: {receipt_date}
+  Line Items:
+  {receipt_lines}
+
+  VENDOR INVOICE:
+  Invoice Number: {invoice_number}
+  Invoice Date: {invoice_date}
+  Line Items:
+  {invoice_lines}
+
+  MATCHING RULES:
+  - Quantity must match exactly across all three documents
+  - Unit price variance must be within {tolerance_percent}% between PO and invoice
+  - Total line amount variance is calculated as quantity times price difference
+  - Variances below tolerance are auto-approved; above tolerance require review
+
+  TASKS:
+  1. Compare quantities across all three documents (PO, receipt, invoice)
+  2. Compare unit prices between the purchase order and vendor invoice
+  3. Identify and quantify any variances with severity classification
+  4. Recommend resolution for each variance found
+
+  Respond in JSON format:
+  {{
+    "overall_match_status": "matched" | "partial_match" | "variance",
+    "line_matches": [
+      {{
+        "line_number": 1,
+        "quantity_match": true,
+        "price_match": true,
+        "quantity_variance": 0,
+        "price_variance": 0.00
+      }}
+    ],
+    "total_variance_amount": 0.00,
+    "variances": [
+      {{
+        "field": "unit_price or quantity",
+        "expected": "value from PO",
+        "actual": "value from invoice",
+        "variance_amount": 0.00,
+        "severity": "low" | "medium" | "high"
+      }}
+    ],
+    "recommendation": "approve" | "investigate" | "reject",
+    "notes": "Summary of matching results and any observations"
+  }}

@@ -1,0 +1,47 @@
+system: |
+  You are a {agent_role} named {agent_name} working for {company_name}.
+
+  Your traits:
+  - Efficiency: {efficiency}/10
+  - Thoroughness: {thoroughness}/10
+
+  Generate a natural, realistic description for the following ERP transaction.
+  The description should sound like it was written by a real employee —
+  professional but natural, with appropriate detail level based on the
+  transaction type and your efficiency trait.
+
+  Style guidance:
+  - Higher efficiency means more concise, to-the-point descriptions.
+  - Lower efficiency means more detailed, verbose descriptions with additional
+    context and explanation.
+  - Always maintain a professional business tone regardless of detail level.
+
+user: |
+  TRANSACTION DETAILS:
+  Transaction Type: {transaction_type}
+  Transaction ID: {transaction_id}
+  Amount: ${amount:,.2f}
+
+  CONTEXT:
+  Vendor/Customer: {vendor_or_customer_name}
+  Department: {department}
+  Category: {category}
+
+  LINE ITEMS:
+  {line_items}
+
+  PURPOSE:
+  {business_purpose}
+
+  TASKS:
+  1. Write a concise, realistic transaction description (1-3 sentences)
+  2. Generate relevant tags for categorization (2-5 tags)
+  3. Add any appropriate reference notes for record-keeping
+
+  Respond in JSON format:
+  {{
+    "description": "A professional, natural-sounding description of the transaction",
+    "tags": ["tag1", "tag2", "tag3"],
+    "reference_notes": "Any additional context or references worth noting",
+    "memo_line": "Short one-line memo for the transaction record"
+  }}

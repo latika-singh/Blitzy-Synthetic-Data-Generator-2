@@ -1,0 +1,24 @@
+# =============================================================================
+# Synthetic ERP Data Generation Platform — Project 2
+# Agent & Orchestration Engine — Development and Testing Dependencies
+# =============================================================================
+# This file lists dev/test packages only. Production dependencies are pulled
+# in via the -r requirements.txt reference below.
+# Version specifiers sourced from the project specification (README.md §0.3.1).
+# =============================================================================
+
+# Include all production dependencies
+-r requirements.txt
+
+# -----------------------------------------------------------------------------
+# Testing Framework
+# -----------------------------------------------------------------------------
+pytest>=8.0.0              # Test framework for unit and integration tests
+pytest-asyncio>=0.23.0     # Async test support for asyncio-based components (agents, LLM client, event bus)
+pytest-cov>=4.1.0          # Coverage reporting — target >=80% across all source modules
+
+# -----------------------------------------------------------------------------
+# Test Mocks and Doubles
+# -----------------------------------------------------------------------------
+fakeredis>=2.21.0          # In-memory Redis mock for unit tests (agent memory, LLM queue, event store)
+aioresponses>=0.7.6        # Mocking aiohttp requests for Project 1 REST API integration tests

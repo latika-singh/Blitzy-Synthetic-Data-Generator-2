@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synthetic-erp-agent-engine"
+version = "0.1.0"
+description = "AI-powered Agent & Orchestration Engine for Synthetic ERP Data Generation Platform - Phase 2"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.79.0",
+    "openai>=2.20.0",
+    "aiohttp>=3.9.0",
+    "redis>=7.0.0",
+    "numpy>=1.26.0",
+    "scipy>=1.12.0",
+    "faker>=22.0.0",
+    "pydantic>=2.5.0",
+    "structlog>=24.1.0",
+    "python-dateutil>=2.8.0",
+    "holidays>=0.40",
+    "tenacity>=8.2.0",
+    "sentence-transformers>=2.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "fakeredis>=2.21.0",
+    "aioresponses>=0.7.6",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --strict-markers"
+markers = [
+    "asyncio: async test marker",
+    "slow: tests that take more than 5 seconds",
+    "integration: tests requiring external services (Redis, LLM APIs)",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["tests/*", "*/conftest.py"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if __name__ == .__main__.",
+    "raise NotImplementedError",
+    "pass",
+    "except ImportError",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

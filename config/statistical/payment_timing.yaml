@@ -1,0 +1,152 @@
+# =============================================================================
+# Payment Timing Configuration — 5-Segment Mixture Model
+# =============================================================================
+#
+# This configuration defines the 5-segment mixture model for simulating
+# realistic customer payment timing behavior in the Synthetic ERP Data
+# Generation Platform.
+#
+# Consumed by: app/statistical/payment_timing_model.py
+#              (PaymentTimingModel class, PaymentTimingConfig Pydantic model)
+#
+# Feature: F-006 — Statistical Models
+#
+# All parameters are sourced from STATISTICAL_MODELS_SPEC
+# (README.md lines 1387-1491). Do NOT alter any parameter values.
+#
+# Model Overview:
+#   Payment timing is modeled as a mixture of 5 distributions, each
+#   representing a distinct payment behavior segment. The offset (in days)
+#   is sampled relative to the invoice due date:
+#     - Negative offset = paid before due date
+#     - Zero offset     = paid on due date
+#     - Positive offset  = paid after due date
+#
+#   Customer profiles shift the mixture weights to bias toward earlier
+#   or later payment segments.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Segments — 5 payment behavior distributions
+# -----------------------------------------------------------------------------
+# Each segment defines:
+#   name             — unique segment identifier
+#   weight           — default selection probability (all weights sum to 1.00)
+#   distribution_type — "normal" (scipy.stats.norm) or "lognormal" (scipy.stats.lognorm)
+#   loc              — location parameter (mu for normal; loc for lognormal)
+#   scale            — scale parameter (sigma for normal; scale for lognormal)
+#   s                — shape parameter (only for lognormal; null for normal)
+#   description      — human-readable behavior description
+#
+# Default weight sum: 0.20 + 0.30 + 0.25 + 0.15 + 0.10 = 1.00
+# -----------------------------------------------------------------------------
+segments:
+  # Segment 1: Customers who pay early to capture cash discounts (e.g., 2/10 Net 30)
+  # Normal distribution centered 8 days before due date
+  # README.md lines 1392-1396
+  - name: "early_discount"
+    weight: 0.20
+    distribution_type: "normal"
+    loc: -8
+    scale: 2
+    s: null
+    description: "Pay early to capture discount"
+
+  # Segment 2: Customers who pay slightly before the due date
+  # Normal distribution centered 2 days before due date
+  # README.md lines 1397-1401
+  - name: "prompt"
+    weight: 0.30
+    distribution_type: "normal"
+    loc: -2
+    scale: 3
+    s: null
+    description: "Pay slightly before due"
+
+  # Segment 3: Customers who pay around the due date (slightly after)
+  # Normal distribution centered 2 days after due date
+  # README.md lines 1402-1406
+  - name: "on_time"
+    weight: 0.25
+    distribution_type: "normal"
+    loc: 2
+    scale: 4
+    s: null
+    description: "Pay around due date"
+
+  # Segment 4: Customers who consistently pay late
+  # Log-normal distribution starting 10 days after due date
+  # README.md lines 1407-1411
+  - name: "late"
+    weight: 0.15
+    distribution_type: "lognormal"
+    loc: 10
+    scale: 5
+    s: 1.0
+    description: "Consistently late"
+
+  # Segment 5: Problem accounts with severe payment delays
+  # Log-normal distribution starting 30 days after due date
+  # README.md lines 1412-1416
+  - name: "problem"
+    weight: 0.10
+    distribution_type: "lognormal"
+    loc: 30
+    scale: 15
+    s: 1.2
+    description: "Severely late"
+
+# -----------------------------------------------------------------------------
+# Profile Weight Overrides — customer-specific segment selection probabilities
+# -----------------------------------------------------------------------------
+# Each profile maps to a list of 5 weights corresponding to the segment order:
+#   [early_discount, prompt, on_time, late, problem]
+#
+# CRITICAL: The weight list order MUST match the segments list order above.
+# Index 0 = early_discount, 1 = prompt, 2 = on_time, 3 = late, 4 = problem
+#
+# Each profile's weights MUST sum to exactly 1.00.
+# README.md lines 1467-1472
+# -----------------------------------------------------------------------------
+profile_weights:
+  # Excellent payers — heavily biased toward early discount and prompt payment
+  # Sum: 0.60 + 0.30 + 0.08 + 0.02 + 0.00 = 1.00
+  excellent: [0.60, 0.30, 0.08, 0.02, 0.00]
+
+  # Good payers — mostly prompt, occasionally early or slightly late
+  # Sum: 0.20 + 0.50 + 0.20 + 0.08 + 0.02 = 1.00
+  good: [0.20, 0.50, 0.20, 0.08, 0.02]
+
+  # Average payers — balanced across on-time and near-due segments
+  # Sum: 0.10 + 0.30 + 0.35 + 0.20 + 0.05 = 1.00
+  average: [0.10, 0.30, 0.35, 0.20, 0.05]
+
+  # Poor payers — biased toward late payment
+  # Sum: 0.05 + 0.10 + 0.25 + 0.40 + 0.20 = 1.00
+  poor: [0.05, 0.10, 0.25, 0.40, 0.20]
+
+  # Problem accounts — heavily biased toward severely late payment
+  # Sum: 0.00 + 0.05 + 0.15 + 0.35 + 0.45 = 1.00
+  problem: [0.00, 0.05, 0.15, 0.35, 0.45]
+
+# -----------------------------------------------------------------------------
+# Default Profile
+# -----------------------------------------------------------------------------
+# Used when a customer's payment profile is not specified or not found.
+# README.md line 1475: PROFILE_WEIGHTS.get(profile, PROFILE_WEIGHTS["average"])
+# -----------------------------------------------------------------------------
+default_profile: "average"
+
+# -----------------------------------------------------------------------------
+# Weekend Adjustment
+# -----------------------------------------------------------------------------
+# If a calculated payment date falls on a weekend, shift it forward to the
+# next business day (Monday).
+# README.md lines 1485-1491
+# -----------------------------------------------------------------------------
+weekend_adjustment:
+  enabled: true
+  # Saturday (weekday=5) → move forward 2 days to Monday
+  saturday_offset: 2
+  # Sunday (weekday=6) → move forward 1 day to Monday
+  sunday_offset: 1

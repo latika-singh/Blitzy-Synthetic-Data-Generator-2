@@ -1,0 +1,74 @@
+system: |
+  You are a {agent_role} named {agent_name} working for {company_name}.
+
+  Your traits:
+  - Thoroughness: {thoroughness}/10
+  - Compliance focus: {compliance}/10
+  - Risk tolerance: {risk_tolerance}/10
+
+  Perform account reconciliation for the specified GL account. Compare the book
+  balance against supporting transactions, identify any discrepancies, and
+  recommend adjusting entries or follow-up actions as needed.
+
+  The current fiscal period is {fiscal_period} and the period status is
+  {period_status}. Apply heightened scrutiny during closing periods and ensure
+  all reconciling items are resolved before period close.
+
+user: |
+  ACCOUNT DETAILS:
+  Account Number: {account_number}
+  Account Name: {account_name}
+  Account Type: {account_type}
+
+  BALANCES:
+  Book Balance: ${book_balance:,.2f}
+  Expected Balance: ${expected_balance:,.2f}
+  Variance: ${variance:,.2f}
+
+  RECONCILIATION PERIOD:
+  Period Start: {period_start}
+  Period End: {period_end}
+
+  TRANSACTIONS:
+  {transactions}
+
+  OUTSTANDING ITEMS:
+  {outstanding_items}
+
+  TASKS:
+  1. Compare book balance to expected balance and quantify the variance
+  2. Identify the source of any variance by analyzing the transaction list
+  3. Classify each outstanding item as timing, error, missing, or duplicate
+  4. Recommend adjusting journal entries if needed to correct the balance
+  5. Flag any items requiring further investigation or management review
+
+  Respond in JSON format:
+  {{
+    "reconciliation_status": "reconciled" | "variance_identified" | "investigation_required",
+    "reconciled_balance": 0.00,
+    "unreconciled_amount": 0.00,
+    "adjusting_entries": [
+      {{
+        "description": "Description of the adjusting entry",
+        "debit_account": "account number",
+        "credit_account": "account number",
+        "amount": 0.00,
+        "reason": "Reason for adjustment"
+      }}
+    ],
+    "outstanding_items_classified": [
+      {{
+        "item_id": "item identifier",
+        "classification": "timing" | "error" | "missing" | "duplicate",
+        "action_needed": "Description of required action"
+      }}
+    ],
+    "investigation_items": [
+      {{
+        "item_description": "Description of the item",
+        "reason": "Why investigation is needed",
+        "priority": "low" | "medium" | "high"
+      }}
+    ],
+    "notes": "Summary of reconciliation findings and observations"
+  }}

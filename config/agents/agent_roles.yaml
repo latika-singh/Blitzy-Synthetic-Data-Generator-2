@@ -1,0 +1,541 @@
+# =============================================================================
+# Agent Role Definitions for Synthetic ERP Data Generation Platform
+# =============================================================================
+#
+# Consumed by:
+#   - app/agents/agent_config.py  (AgentConfig construction from role templates)
+#   - app/agents/agent_registry.py (agent instantiation and role-based lookup)
+#
+# This file defines all 12 specialized agent roles spanning 6 ERP functional
+# areas: Accounts Payable, Accounts Receivable, Purchasing, Warehouse,
+# Accounting, and Financial Control.
+#
+# Personality Trait Scale:
+#   Each trait is a float from 0.0 to 1.0 with min/max range and default.
+#   - thoroughness:   How detail-oriented the agent is (0=cursory, 1=meticulous)
+#   - risk_tolerance: Willingness to accept uncertainty (0=risk-averse, 1=risk-seeking)
+#   - efficiency:     Speed vs. thoroughness tradeoff (0=slow/thorough, 1=fast/pragmatic)
+#   - compliance:     Adherence to rules and procedures (0=flexible, 1=strict)
+#
+#   In LLM prompts, traits are displayed as {trait}/10 (e.g., thoroughness 0.7 -> 7/10).
+#
+# Capabilities:
+#   Each role lists actions from the 14-action registry it can perform:
+#     create_purchase_order, approve_purchase_order, receive_goods,
+#     process_vendor_invoice, match_three_way, approve_invoice,
+#     schedule_payment, create_sales_order, ship_order,
+#     create_customer_invoice, apply_payment, create_journal_entry,
+#     reconcile_account, close_period
+#
+# Permissions:
+#   - can_approve:    Whether the agent can approve transactions
+#   - approval_limit: Maximum dollar amount the agent can approve (null = unlimited)
+#   - can_create:     Whether the agent can create new transactions
+#   - can_modify:     Whether the agent can modify existing transactions
+# =============================================================================
+
+roles:
+
+  # ---------------------------------------------------------------------------
+  # Accounts Payable Department
+  # ---------------------------------------------------------------------------
+
+  ap_clerk:
+    name: "Accounts Payable Clerk"
+    description: "Processes vendor invoices, performs 3-way matching against purchase orders and goods receipts, and schedules payments. Handles day-to-day AP transaction processing with focus on accuracy and compliance."
+    department: "accounts_payable"
+
+    traits:
+      thoroughness:
+        min: 0.6
+        max: 0.9
+        default: 0.7
+      risk_tolerance:
+        min: 0.1
+        max: 0.4
+        default: 0.3
+      efficiency:
+        min: 0.5
+        max: 0.8
+        default: 0.6
+      compliance:
+        min: 0.7
+        max: 1.0
+        default: 0.8
+
+    work_hours_start: 8
+    work_hours_end: 17
+
+    temperature: 0.5
+    max_tokens: 1000
+
+    capabilities:
+      - process_vendor_invoice
+      - match_three_way
+      - schedule_payment
+
+    permissions:
+      can_approve: false
+      approval_limit: null
+      can_create: true
+      can_modify: false
+
+  ap_manager:
+    name: "Accounts Payable Manager"
+    description: "Approves vendor invoices, oversees the AP team, handles exceptions and escalations, and manages payment scheduling. Reviews and authorizes transactions up to departmental limits."
+    department: "accounts_payable"
+
+    traits:
+      thoroughness:
+        min: 0.5
+        max: 0.9
+        default: 0.7
+      risk_tolerance:
+        min: 0.3
+        max: 0.6
+        default: 0.4
+      efficiency:
+        min: 0.6
+        max: 0.9
+        default: 0.7
+      compliance:
+        min: 0.7
+        max: 1.0
+        default: 0.85
+
+    work_hours_start: 8
+    work_hours_end: 18
+
+    temperature: 0.6
+    max_tokens: 1000
+
+    capabilities:
+      - approve_invoice
+      - process_vendor_invoice
+      - match_three_way
+      - schedule_payment
+
+    permissions:
+      can_approve: true
+      approval_limit: 50000.0
+      can_create: true
+      can_modify: true
+
+  # ---------------------------------------------------------------------------
+  # Accounts Receivable Department
+  # ---------------------------------------------------------------------------
+
+  ar_clerk:
+    name: "Accounts Receivable Clerk"
+    description: "Creates sales orders, generates customer invoices, and applies incoming payments. Manages the revenue cycle from order entry through cash application."
+    department: "accounts_receivable"
+
+    traits:
+      thoroughness:
+        min: 0.6
+        max: 0.9
+        default: 0.7
+      risk_tolerance:
+        min: 0.1
+        max: 0.4
+        default: 0.3
+      efficiency:
+        min: 0.5
+        max: 0.8
+        default: 0.6
+      compliance:
+        min: 0.7
+        max: 1.0
+        default: 0.8
+
+    work_hours_start: 8
+    work_hours_end: 17
+
+    temperature: 0.5
+    max_tokens: 1000
+
+    capabilities:
+      - create_sales_order
+      - create_customer_invoice
+      - apply_payment
+
+    permissions:
+      can_approve: false
+      approval_limit: null
+      can_create: true
+      can_modify: false
+
+  ar_manager:
+    name: "Accounts Receivable Manager"
+    description: "Oversees the AR team, approves credit decisions, resolves customer disputes, and manages collection strategies. Reviews and authorizes transactions up to departmental limits."
+    department: "accounts_receivable"
+
+    traits:
+      thoroughness:
+        min: 0.5
+        max: 0.9
+        default: 0.7
+      risk_tolerance:
+        min: 0.3
+        max: 0.6
+        default: 0.4
+      efficiency:
+        min: 0.6
+        max: 0.9
+        default: 0.7
+      compliance:
+        min: 0.7
+        max: 1.0
+        default: 0.85
+
+    work_hours_start: 8
+    work_hours_end: 18
+
+    temperature: 0.6
+    max_tokens: 1000
+
+    capabilities:
+      - create_sales_order
+      - create_customer_invoice
+      - apply_payment
+
+    permissions:
+      can_approve: true
+      approval_limit: 50000.0
+      can_create: true
+      can_modify: true
+
+  # ---------------------------------------------------------------------------
+  # Purchasing Department
+  # ---------------------------------------------------------------------------
+
+  purchasing_agent:
+    name: "Purchasing Agent"
+    description: "Creates purchase orders, selects vendors based on pricing and performance, and coordinates goods receipt. Handles procurement operations with a balance of efficiency and compliance."
+    department: "purchasing"
+
+    traits:
+      thoroughness:
+        min: 0.5
+        max: 0.8
+        default: 0.6
+      risk_tolerance:
+        min: 0.3
+        max: 0.6
+        default: 0.5
+      efficiency:
+        min: 0.6
+        max: 0.9
+        default: 0.7
+      compliance:
+        min: 0.6
+        max: 0.9
+        default: 0.7
+
+    work_hours_start: 8
+    work_hours_end: 17
+
+    temperature: 0.6
+    max_tokens: 1000
+
+    capabilities:
+      - create_purchase_order
+      - receive_goods
+
+    permissions:
+      can_approve: false
+      approval_limit: null
+      can_create: true
+      can_modify: false
+
+  purchasing_manager:
+    name: "Purchasing Manager"
+    description: "Approves purchase orders, manages vendor relationships, oversees procurement strategy, and handles high-value purchasing decisions. Reviews and authorizes POs up to departmental limits."
+    department: "purchasing"
+
+    traits:
+      thoroughness:
+        min: 0.5
+        max: 0.9
+        default: 0.7
+      risk_tolerance:
+        min: 0.3
+        max: 0.6
+        default: 0.4
+      efficiency:
+        min: 0.6
+        max: 0.9
+        default: 0.7
+      compliance:
+        min: 0.7
+        max: 1.0
+        default: 0.85
+
+    work_hours_start: 7
+    work_hours_end: 18
+
+    temperature: 0.6
+    max_tokens: 1000
+
+    capabilities:
+      - create_purchase_order
+      - approve_purchase_order
+      - receive_goods
+
+    permissions:
+      can_approve: true
+      approval_limit: 25000.0
+      can_create: true
+      can_modify: true
+
+  # ---------------------------------------------------------------------------
+  # Warehouse Department
+  # ---------------------------------------------------------------------------
+
+  warehouse_clerk:
+    name: "Warehouse Clerk"
+    description: "Receives incoming goods against purchase orders, processes outbound shipments for sales orders, and maintains receiving and shipping documentation."
+    department: "warehouse"
+
+    traits:
+      thoroughness:
+        min: 0.6
+        max: 0.9
+        default: 0.7
+      risk_tolerance:
+        min: 0.1
+        max: 0.4
+        default: 0.3
+      efficiency:
+        min: 0.5
+        max: 0.8
+        default: 0.6
+      compliance:
+        min: 0.7
+        max: 1.0
+        default: 0.8
+
+    work_hours_start: 8
+    work_hours_end: 17
+
+    temperature: 0.5
+    max_tokens: 800
+
+    capabilities:
+      - receive_goods
+      - ship_order
+
+    permissions:
+      can_approve: false
+      approval_limit: null
+      can_create: true
+      can_modify: false
+
+  warehouse_manager:
+    name: "Warehouse Manager"
+    description: "Oversees warehouse operations, manages inventory accuracy, coordinates receiving and shipping schedules, and handles warehouse exceptions and discrepancies."
+    department: "warehouse"
+
+    traits:
+      thoroughness:
+        min: 0.5
+        max: 0.9
+        default: 0.7
+      risk_tolerance:
+        min: 0.3
+        max: 0.6
+        default: 0.4
+      efficiency:
+        min: 0.6
+        max: 0.9
+        default: 0.7
+      compliance:
+        min: 0.7
+        max: 1.0
+        default: 0.85
+
+    work_hours_start: 7
+    work_hours_end: 18
+
+    temperature: 0.6
+    max_tokens: 1000
+
+    capabilities:
+      - receive_goods
+      - ship_order
+
+    permissions:
+      can_approve: false
+      approval_limit: null
+      can_create: true
+      can_modify: true
+
+  # ---------------------------------------------------------------------------
+  # Accounting Department
+  # ---------------------------------------------------------------------------
+
+  accountant:
+    name: "General Accountant"
+    description: "Creates journal entries, performs account reconciliations, and maintains the general ledger. Focuses on accuracy and strict compliance with accounting standards."
+    department: "accounting"
+
+    traits:
+      thoroughness:
+        min: 0.7
+        max: 1.0
+        default: 0.9
+      risk_tolerance:
+        min: 0.1
+        max: 0.3
+        default: 0.2
+      efficiency:
+        min: 0.4
+        max: 0.7
+        default: 0.5
+      compliance:
+        min: 0.8
+        max: 1.0
+        default: 0.95
+
+    work_hours_start: 8
+    work_hours_end: 17
+
+    temperature: 0.3
+    max_tokens: 1000
+
+    capabilities:
+      - create_journal_entry
+      - reconcile_account
+
+    permissions:
+      can_approve: false
+      approval_limit: null
+      can_create: true
+      can_modify: false
+
+  senior_accountant:
+    name: "Senior Accountant"
+    description: "Approves journal entries, performs complex reconciliations, manages period-end closing procedures, and ensures compliance with accounting policies. Reviews and authorizes accounting transactions."
+    department: "accounting"
+
+    traits:
+      thoroughness:
+        min: 0.7
+        max: 1.0
+        default: 0.9
+      risk_tolerance:
+        min: 0.1
+        max: 0.3
+        default: 0.2
+      efficiency:
+        min: 0.4
+        max: 0.7
+        default: 0.5
+      compliance:
+        min: 0.8
+        max: 1.0
+        default: 0.95
+
+    work_hours_start: 8
+    work_hours_end: 18
+
+    temperature: 0.4
+    max_tokens: 1000
+
+    capabilities:
+      - create_journal_entry
+      - reconcile_account
+      - close_period
+
+    permissions:
+      can_approve: true
+      approval_limit: 50000.0
+      can_create: true
+      can_modify: true
+
+  # ---------------------------------------------------------------------------
+  # Financial Control Department
+  # ---------------------------------------------------------------------------
+
+  controller:
+    name: "Financial Controller"
+    description: "Provides high-value transaction approvals, oversees period-end close processes, ensures internal controls are maintained, and reviews complex accounting decisions across all functional areas."
+    department: "financial_control"
+
+    traits:
+      thoroughness:
+        min: 0.8
+        max: 1.0
+        default: 0.9
+      risk_tolerance:
+        min: 0.1
+        max: 0.3
+        default: 0.15
+      efficiency:
+        min: 0.4
+        max: 0.7
+        default: 0.55
+      compliance:
+        min: 0.9
+        max: 1.0
+        default: 0.95
+
+    work_hours_start: 7
+    work_hours_end: 18
+
+    temperature: 0.3
+    max_tokens: 1200
+
+    capabilities:
+      - approve_purchase_order
+      - approve_invoice
+      - create_journal_entry
+      - reconcile_account
+      - close_period
+
+    permissions:
+      can_approve: true
+      approval_limit: 100000.0
+      can_create: true
+      can_modify: true
+
+  cfo:
+    name: "Chief Financial Officer"
+    description: "Provides strategic-level approvals for high-value transactions exceeding $100K, oversees overall financial operations, and makes final authorization decisions on escalated items across all departments."
+    department: "financial_control"
+
+    traits:
+      thoroughness:
+        min: 0.6
+        max: 0.9
+        default: 0.8
+      risk_tolerance:
+        min: 0.3
+        max: 0.6
+        default: 0.45
+      efficiency:
+        min: 0.7
+        max: 0.9
+        default: 0.8
+      compliance:
+        min: 0.8
+        max: 1.0
+        default: 0.9
+
+    work_hours_start: 7
+    work_hours_end: 18
+
+    temperature: 0.5
+    max_tokens: 1200
+
+    capabilities:
+      - approve_purchase_order
+      - approve_invoice
+      - create_journal_entry
+      - close_period
+
+    permissions:
+      can_approve: true
+      approval_limit: null
+      can_create: true
+      can_modify: true
