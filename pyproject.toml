@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "synthetic-erp-agent-engine"
 version = "0.1.0"
-description = "AI-powered Agent & Orchestration Engine for Synthetic ERP Data Generation Platform - Phase 2"
+description = "AI-powered Agent & Orchestration Engine with Transaction Workflows for Synthetic ERP Data Generation Platform - Phase 2 & 3"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -22,6 +22,11 @@ dependencies = [
     "holidays>=0.40",
     "tenacity>=8.2.0",
     "sentence-transformers>=2.3.0",
+    "sqlalchemy==2.0.25",
+    "psycopg2-binary==2.9.9",
+    "aiofiles==23.2.1",
+    "pydantic-settings==2.2.0",
+    "pandas==2.2.0",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +36,8 @@ dev = [
     "pytest-cov>=4.1.0",
     "fakeredis>=2.21.0",
     "aioresponses>=0.7.6",
+    "pytest-mock>=3.12.0",
+    "hypothesis>=6.92.0",
 ]
 
 [tool.pytest.ini_options]
@@ -44,6 +51,11 @@ markers = [
     "asyncio: async test marker",
     "slow: tests that take more than 5 seconds",
     "integration: tests requiring external services (Redis, LLM APIs)",
+    "financial: tests involving GL balance assertions and financial integrity validation",
+    "discrepancy: discrepancy injection and ground truth generation tests",
+    "rework: rework loop engine and fix scenario tests",
+    "p2p: procure-to-pay cycle tests (PO, receipt, invoice, payment)",
+    "o2c: order-to-cash cycle tests (order, shipment, invoice, receipt)",
 ]
 
 [tool.coverage.run]
