@@ -1,0 +1,284 @@
+# =============================================================================
+# O2C Discrepancy Type Definitions
+# =============================================================================
+#
+# Purpose:
+#   Defines all 10 Order-to-Cash (O2C) discrepancy types for the Discrepancy
+#   Injection System. Each type specifies its code, name, category, difficulty
+#   level, base injection rate, parameter bounds, and human-readable description.
+#
+# Consuming modules:
+#   - app/discrepancies/discrepancy_catalog.py   (DiscrepancyCatalog)
+#   - app/discrepancies/discrepancy_injector.py  (DiscrepancyInjector)
+#   - app/discrepancies/ground_truth_generator.py (GroundTruthGenerator)
+#
+# Implementation modules (one per type):
+#   - app/discrepancies/o2c/duplicate_customer_invoice.py  (O2C-001)
+#   - app/discrepancies/o2c/invoice_without_shipment.py    (O2C-002)
+#   - app/discrepancies/o2c/credit_limit_exceeded.py       (O2C-003)
+#   - app/discrepancies/o2c/short_payment.py               (O2C-004)
+#   - app/discrepancies/o2c/overpayment_not_returned.py    (O2C-005)
+#   - app/discrepancies/o2c/revenue_recognition_timing.py  (O2C-006)
+#   - app/discrepancies/o2c/fictitious_customer.py         (O2C-007)
+#   - app/discrepancies/o2c/round_tripping.py              (O2C-008)
+#   - app/discrepancies/o2c/channel_stuffing.py            (O2C-009)
+#   - app/discrepancies/o2c/side_agreements.py             (O2C-010)
+#
+# Specification reference: AAP Section 0.2.2, Section 0.5.1 Group 5 & Group 7
+#
+# Schema per type:
+#   code (str)            — Unique type code (O2C-NNN)
+#   name (str)            — Human-readable discrepancy name
+#   category (str)        — Always "o2c" for this file
+#   difficulty (str)      — "easy" or "medium" (no "hard" in MVP — hard: 0.00)
+#   base_rate (float)     — Base injection probability [0.0–1.0]
+#   parameter_bounds (map)— Min/max pairs for each configurable parameter
+#   description (str)     — Detailed explanation of the discrepancy
+#   detection_method (str)— How this discrepancy is typically detected
+#
+# Constraints:
+#   - No "hard" difficulty discrepancies in MVP (hard: 0.00 per AAP Section 0.1.2)
+#   - All parameter_bounds MUST have both min and max values
+#   - base_rate values represent relative injection probability within the O2C
+#     category; actual injection is controlled by discrepancy_rates.yaml
+#   - Difficulty distribution: easy (70%), medium (30%) per AAP Section 0.7.5
+#
+# IMPORTANT: Do NOT add hard-difficulty discrepancies for MVP.
+# =============================================================================
+
+discrepancy_types:
+
+  # ---------------------------------------------------------------------------
+  # O2C-001: Duplicate Customer Invoice
+  # ---------------------------------------------------------------------------
+  # Duplicate customer invoice issued for the same sales order or shipment.
+  # May inflate revenue or accounts receivable balance.
+  # Difficulty: EASY — straightforward invoice number/amount matching detection.
+  # ---------------------------------------------------------------------------
+  - code: "O2C-001"
+    name: "Duplicate Customer Invoice"
+    category: "o2c"
+    difficulty: "easy"
+    base_rate: 0.12                      # 12% base injection probability
+    description: "Duplicate customer invoice issued for the same sales order or shipment — may inflate revenue or AR balance"
+    detection_method: "invoice_matching"
+    parameter_bounds:
+      days_apart:                        # How many days apart duplicates can be
+        min: 1
+        max: 60
+      amount_variation_pct:              # Max 5% amount variation for near-duplicates
+        min: 0.0
+        max: 0.05
+
+  # ---------------------------------------------------------------------------
+  # O2C-002: Invoice Without Shipment
+  # ---------------------------------------------------------------------------
+  # Customer invoice generated without a corresponding shipment record.
+  # Indicates billing without delivery — revenue recognition concern.
+  # Difficulty: EASY — simple document linkage check.
+  # ---------------------------------------------------------------------------
+  - code: "O2C-002"
+    name: "Invoice Without Shipment"
+    category: "o2c"
+    difficulty: "easy"
+    base_rate: 0.10                      # 10% base injection probability
+    description: "Customer invoice generated without a corresponding shipment record — billing without delivery"
+    detection_method: "document_linkage"
+    parameter_bounds:
+      remove_shipment_reference:         # Always remove shipment link
+        min: true
+        max: true
+
+  # ---------------------------------------------------------------------------
+  # O2C-003: Credit Limit Exceeded
+  # ---------------------------------------------------------------------------
+  # Sales order accepted when the customer's outstanding AR balance plus the
+  # new order amount exceeds their assigned credit limit.
+  # Difficulty: EASY — comparison of order total against credit limit.
+  # ---------------------------------------------------------------------------
+  - code: "O2C-003"
+    name: "Credit Limit Exceeded"
+    category: "o2c"
+    difficulty: "easy"
+    base_rate: 0.08                      # 8% base injection probability
+    description: "Sales order accepted when the customer's outstanding AR balance plus new order amount exceeds their credit limit"
+    detection_method: "credit_check"
+    parameter_bounds:
+      excess_pct:                        # How far over credit limit (1%–50% excess)
+        min: 0.01
+        max: 0.50
+      bypass_credit_check:               # Whether to bypass entirely or just exceed
+        min: false
+        max: true
+
+  # ---------------------------------------------------------------------------
+  # O2C-004: Short Payment
+  # ---------------------------------------------------------------------------
+  # Customer payment amount is less than the invoice amount without a valid
+  # discount or credit memo justification.
+  # Difficulty: EASY — payment vs. invoice amount comparison.
+  # ---------------------------------------------------------------------------
+  - code: "O2C-004"
+    name: "Short Payment"
+    category: "o2c"
+    difficulty: "easy"
+    base_rate: 0.10                      # 10% base injection probability
+    description: "Customer payment amount is less than the invoice amount without a valid discount or credit memo justification"
+    detection_method: "payment_matching"
+    parameter_bounds:
+      short_pct:                         # How much less than invoice (1%–25% short)
+        min: 0.01
+        max: 0.25
+      has_unauthorized_deduction:        # Whether customer claims unauthorized deduction
+        min: false
+        max: true
+
+  # ---------------------------------------------------------------------------
+  # O2C-005: Overpayment Not Returned
+  # ---------------------------------------------------------------------------
+  # Customer overpayment recorded as unapplied cash but not returned or
+  # applied to future invoices within the configured resolution period.
+  # Difficulty: MEDIUM — requires aging analysis and unapplied cash tracking.
+  # ---------------------------------------------------------------------------
+  - code: "O2C-005"
+    name: "Overpayment Not Returned"
+    category: "o2c"
+    difficulty: "medium"
+    base_rate: 0.05                      # 5% base injection probability
+    description: "Customer overpayment recorded as unapplied cash but not returned or applied to future invoices within the configured period"
+    detection_method: "aging_analysis"
+    parameter_bounds:
+      overpay_pct:                       # Overpayment as percentage of invoice (1%–20%)
+        min: 0.01
+        max: 0.20
+      days_unresolved:                   # How long overpayment remains unresolved
+        min: 30
+        max: 180
+
+  # ---------------------------------------------------------------------------
+  # O2C-006: Revenue Recognition Timing Error
+  # ---------------------------------------------------------------------------
+  # Revenue recognized in a fiscal period before goods are shipped or services
+  # delivered — premature revenue recognition.
+  # Difficulty: MEDIUM — requires period boundary analysis and delivery timing.
+  # ---------------------------------------------------------------------------
+  - code: "O2C-006"
+    name: "Revenue Recognition Timing Error"
+    category: "o2c"
+    difficulty: "medium"
+    base_rate: 0.06                      # 6% base injection probability
+    description: "Revenue recognized in a fiscal period before goods are shipped or services delivered — premature revenue recognition"
+    detection_method: "period_analysis"
+    parameter_bounds:
+      days_premature:                    # How many days before delivery revenue is recognized
+        min: 1
+        max: 30
+      cross_period_boundary:             # Whether the error crosses a fiscal period boundary
+        min: false
+        max: true
+
+  # ---------------------------------------------------------------------------
+  # O2C-007: Fictitious Customer
+  # ---------------------------------------------------------------------------
+  # Sales order or invoice references a customer entity with indicators of
+  # being fictitious — PO box address, recently created, no payment history.
+  # Difficulty: MEDIUM — requires cross-referencing multiple entity attributes.
+  # ---------------------------------------------------------------------------
+  - code: "O2C-007"
+    name: "Fictitious Customer"
+    category: "o2c"
+    difficulty: "medium"
+    base_rate: 0.03                      # 3% base injection probability
+    description: "Sales order or invoice references a customer entity with indicators of being fictitious — PO box address, recently created, no payment history"
+    detection_method: "entity_cross_reference"
+    parameter_bounds:
+      indicator_count:                   # Number of fictitious indicators present
+        min: 1
+        max: 3
+      customer_age_days:                 # How recently the customer was created
+        min: 0
+        max: 30
+
+  # ---------------------------------------------------------------------------
+  # O2C-008: Round-Tripping
+  # ---------------------------------------------------------------------------
+  # Circular transactions where the same entity appears as both customer and
+  # vendor — goods sold and repurchased to inflate revenue.
+  # Difficulty: MEDIUM — requires entity cross-referencing and chain analysis.
+  # ---------------------------------------------------------------------------
+  - code: "O2C-008"
+    name: "Round-Tripping"
+    category: "o2c"
+    difficulty: "medium"
+    base_rate: 0.03                      # 3% base injection probability
+    description: "Circular transactions where the same entity appears as both customer and vendor — goods sold and repurchased to inflate revenue"
+    detection_method: "entity_cross_reference"
+    parameter_bounds:
+      cycle_length:                      # Number of transactions in the circular chain
+        min: 2
+        max: 5
+      amount_similarity_pct:             # How similar the amounts are (90%–100%)
+        min: 0.90
+        max: 1.00
+
+  # ---------------------------------------------------------------------------
+  # O2C-009: Channel Stuffing
+  # ---------------------------------------------------------------------------
+  # Abnormally high volume of shipments to a single customer near period end.
+  # Premature shipments to meet revenue targets; high return likelihood.
+  # Difficulty: MEDIUM — requires volume pattern and timing analysis.
+  # ---------------------------------------------------------------------------
+  - code: "O2C-009"
+    name: "Channel Stuffing"
+    category: "o2c"
+    difficulty: "medium"
+    base_rate: 0.04                      # 4% base injection probability
+    description: "Abnormally high volume of shipments to a single customer near period end — premature shipments to meet revenue targets"
+    detection_method: "pattern_analysis"
+    parameter_bounds:
+      volume_multiplier:                 # How many times normal volume (2x–5x)
+        min: 2.0
+        max: 5.0
+      days_before_period_end:            # How close to period end the stuffing occurs
+        min: 1
+        max: 10
+      return_likelihood_pct:             # Probability of subsequent returns
+        min: 0.30
+        max: 0.80
+
+  # ---------------------------------------------------------------------------
+  # O2C-010: Side Agreements Not Disclosed
+  # ---------------------------------------------------------------------------
+  # Undisclosed side agreements granting customers special return rights,
+  # extended payment terms, or price concessions not reflected in the
+  # recorded transaction.
+  # Difficulty: MEDIUM — requires terms analysis and agreement comparison.
+  # ---------------------------------------------------------------------------
+  - code: "O2C-010"
+    name: "Side Agreements Not Disclosed"
+    category: "o2c"
+    difficulty: "medium"
+    base_rate: 0.03                      # 3% base injection probability
+    description: "Undisclosed side agreements granting customers special return rights, extended payment terms, or price concessions not reflected in the recorded transaction"
+    detection_method: "terms_analysis"
+    parameter_bounds:
+      agreement_type:                    # Type of side agreement
+        min: "return_rights"
+        max: "price_concession"
+      discount_pct:                      # Hidden discount or concession percentage
+        min: 0.05
+        max: 0.30
+
+# =============================================================================
+# Category Summary
+# =============================================================================
+# Aggregated counts for validation and catalog loading.
+# Easy types:   O2C-001, O2C-002, O2C-003, O2C-004 (4 types)
+# Medium types:  O2C-005, O2C-006, O2C-007, O2C-008, O2C-009, O2C-010 (6 types)
+# Hard types:   None (MVP constraint — hard: 0.00)
+# =============================================================================
+category_summary:
+  total_types: 10                        # Total O2C discrepancy types defined
+  easy_count: 4                          # O2C-001, O2C-002, O2C-003, O2C-004
+  medium_count: 6                        # O2C-005, O2C-006, O2C-007, O2C-008, O2C-009, O2C-010
+  hard_count: 0                          # No hard discrepancies in MVP
