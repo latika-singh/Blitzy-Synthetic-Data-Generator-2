@@ -220,6 +220,13 @@ class SimulationEngine:
         event_bus: Optional[EventBus] = None,
         agent_registry: Optional[AgentRegistry] = None,
         metrics: Optional[SimulationMetrics] = None,
+        # ── Project 3 subsystems (ADR-003: all Optional, None default) ──
+        gl_posting_engine: Optional[Any] = None,
+        discrepancy_injector: Optional[Any] = None,
+        rework_loop_engine: Optional[Any] = None,
+        period_close_manager: Optional[Any] = None,
+        p2p_generators: Optional[Dict[str, Any]] = None,
+        o2c_generators: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.config: SimulationConfig = config or SimulationConfig()
 
@@ -229,6 +236,14 @@ class SimulationEngine:
         self._workflow_orchestrator = workflow_orchestrator
         self._event_bus = event_bus
         self._agent_registry = agent_registry
+
+        # ── P3 subsystems (all Optional per ADR-003) ──
+        self._gl_posting_engine = gl_posting_engine
+        self._discrepancy_injector = discrepancy_injector
+        self._rework_loop_engine = rework_loop_engine
+        self._period_close_manager = period_close_manager
+        self._p2p_generators: Dict[str, Any] = p2p_generators or {}
+        self._o2c_generators: Dict[str, Any] = o2c_generators or {}
 
         # Metrics — default to a fresh instance if not injected
         self._metrics: SimulationMetrics = metrics or SimulationMetrics(
@@ -250,6 +265,12 @@ class SimulationEngine:
             max_transactions_per_day=self.config.max_transactions_per_day,
             max_concurrent_agents=self.config.max_concurrent_agents,
             max_concurrent_workflows=self.config.max_concurrent_workflows,
+            p3_gl_engine=gl_posting_engine is not None,
+            p3_discrepancy_injector=discrepancy_injector is not None,
+            p3_rework_engine=rework_loop_engine is not None,
+            p3_period_close=period_close_manager is not None,
+            p3_p2p_generators=len(self._p2p_generators),
+            p3_o2c_generators=len(self._o2c_generators),
         )
 
     # ------------------------------------------------------------------
@@ -431,6 +452,46 @@ class SimulationEngine:
             total_transactions=day_context.transactions_generated,
         )
 
+        # ── Step 2b: P3 Transaction Generation (P2P + O2C) ──────────
+        # Invoke P2P generators — each produces cycles_completed count
+        total_p2p_cycles: int = 0
+        for gen_name, gen in self._p2p_generators.items():
+            try:
+                gen_result = await gen.generate(day_context)
+                cycles = gen_result.get("cycles_completed", 0) if isinstance(gen_result, dict) else 0
+                total_p2p_cycles += cycles
+            except Exception as p2p_err:
+                logger.warning(
+                    "p2p_generator_error",
+                    generator=gen_name,
+                    error=str(p2p_err),
+                    simulation_date=str(sim_date),
+                )
+        day_context.p2p_cycles_completed = total_p2p_cycles
+
+        # Invoke O2C generators — each produces cycles_completed count
+        total_o2c_cycles: int = 0
+        for gen_name, gen in self._o2c_generators.items():
+            try:
+                gen_result = await gen.generate(day_context)
+                cycles = gen_result.get("cycles_completed", 0) if isinstance(gen_result, dict) else 0
+                total_o2c_cycles += cycles
+            except Exception as o2c_err:
+                logger.warning(
+                    "o2c_generator_error",
+                    generator=gen_name,
+                    error=str(o2c_err),
+                    simulation_date=str(sim_date),
+                )
+        day_context.o2c_cycles_completed = total_o2c_cycles
+
+        logger.debug(
+            "day_step_p3_transaction_generation",
+            simulation_date=str(sim_date),
+            p2p_cycles=total_p2p_cycles,
+            o2c_cycles=total_o2c_cycles,
+        )
+
         # ── Step 3: Route Transactions to Agents ─────────────────────
         transactions_routed: int = 0
         if self._workflow_orchestrator is not None:
@@ -499,6 +560,79 @@ class SimulationEngine:
             simulation_date=str(sim_date),
             agents_active=day_context.agents_active,
             average_utilization=day_context.average_agent_utilization,
+        )
+
+        # ── Step 3b: P3 Discrepancy Injection ────────────────────────
+        if self._discrepancy_injector is not None:
+            try:
+                disc_result = await self._discrepancy_injector.process_batch(day_context)
+                if isinstance(disc_result, dict):
+                    day_context.discrepancies_injected = disc_result.get(
+                        "discrepancies_injected", 0,
+                    )
+                    day_context.ground_truths_created = disc_result.get(
+                        "ground_truths_created", 0,
+                    )
+            except Exception as disc_err:
+                logger.warning(
+                    "discrepancy_injection_error",
+                    error=str(disc_err),
+                    simulation_date=str(sim_date),
+                )
+
+        # ── Step 4.5a: P3 GL Posting ─────────────────────────────────
+        if self._gl_posting_engine is not None:
+            try:
+                gl_result = await self._gl_posting_engine.post_pending_entries(day_context)
+                if isinstance(gl_result, dict):
+                    day_context.gl_entries_posted = gl_result.get(
+                        "entries_posted", 0,
+                    )
+            except Exception as gl_err:
+                logger.warning(
+                    "gl_posting_error",
+                    error=str(gl_err),
+                    simulation_date=str(sim_date),
+                )
+
+        # ── Step 4.5b: P3 Rework Loop Validation ─────────────────────
+        if self._rework_loop_engine is not None:
+            try:
+                rework_result = await self._rework_loop_engine.process_day(day_context)
+                if isinstance(rework_result, dict):
+                    day_context.rework_attempts = rework_result.get("attempts", 0)
+                    day_context.rework_successes = rework_result.get("successes", 0)
+                    day_context.rework_escalations = rework_result.get("escalations", 0)
+            except Exception as rework_err:
+                logger.warning(
+                    "rework_loop_error",
+                    error=str(rework_err),
+                    simulation_date=str(sim_date),
+                )
+
+        # ── Step 4.5c: P3 Period Close ────────────────────────────────
+        if self._period_close_manager is not None and day_context.is_period_closing():
+            try:
+                pc_result = await self._period_close_manager.execute_period_close(day_context)
+                if isinstance(pc_result, dict):
+                    day_context.period_closes_completed = 1
+                    day_context.trial_balance_checks_passed = pc_result.get(
+                        "trial_balance_passed", 0,
+                    )
+            except Exception as pc_err:
+                logger.warning(
+                    "period_close_error",
+                    error=str(pc_err),
+                    simulation_date=str(sim_date),
+                )
+
+        logger.debug(
+            "day_step_p3_finalize",
+            simulation_date=str(sim_date),
+            discrepancies_injected=day_context.discrepancies_injected,
+            gl_entries_posted=day_context.gl_entries_posted,
+            rework_attempts=day_context.rework_attempts,
+            period_closes=day_context.period_closes_completed,
         )
 
         # ── Step 5: Persist Events & Finalize ────────────────────────
@@ -626,6 +760,13 @@ class SimulationEngine:
             llm_requests=day_context.llm_requests,
             llm_cost_usd=day_context.llm_cost_usd,
             duration_seconds=day_context.day_duration_seconds,
+            # P3 daily metrics
+            p2p_cycles_completed=day_context.p2p_cycles_completed,
+            o2c_cycles_completed=day_context.o2c_cycles_completed,
+            gl_entries_posted=day_context.gl_entries_posted,
+            discrepancies_injected=day_context.discrepancies_injected,
+            rework_attempts=day_context.rework_attempts,
+            rework_successes=day_context.rework_successes,
         )
 
     # ------------------------------------------------------------------
@@ -807,5 +948,23 @@ class SimulationEngine:
                 "available": False,
                 "status": f"error: {exc}",
             }
+
+        # ── P3 subsystem health checks ───────────────────────────────
+        for p3_name, p3_ref in (
+            ("gl_posting_engine", self._gl_posting_engine),
+            ("discrepancy_injector", self._discrepancy_injector),
+            ("rework_loop_engine", self._rework_loop_engine),
+            ("period_close_manager", self._period_close_manager),
+        ):
+            try:
+                health["subsystems"][p3_name] = {
+                    "available": p3_ref is not None,
+                    "status": "ok" if p3_ref is not None else "not_injected",
+                }
+            except Exception as exc:
+                health["subsystems"][p3_name] = {
+                    "available": False,
+                    "status": f"error: {exc}",
+                }
 
         return health
