@@ -1,9 +1,10 @@
 """
-Shared Test Fixtures and Mock Factories for the Project 2 Test Suite.
+Shared Test Fixtures and Mock Factories for the Project 2 and Project 3 Test Suite.
 
 This module provides the foundational test infrastructure used across all
 test modules in the Synthetic ERP Data Generation Platform — Agent &
-Orchestration Engine (Project 2).
+Orchestration Engine (Project 2) and Transaction Workflows & Discrepancies
+(Project 3).
 
 CRITICAL Testing Rules (AAP Section 0.7.5):
     - All LLM integration tests use mocked API responses — NO live API calls.
@@ -11,6 +12,7 @@ CRITICAL Testing Rules (AAP Section 0.7.5):
     - Async tests use pytest-asyncio with proper event loop management.
     - All agent tests verify state transitions (IDLE → THINKING → ACTING → IDLE).
     - Unit test coverage target: ≥ 80% across all source modules.
+    - All financial calculations use Python Decimal (prec=28, ROUND_HALF_UP).
 
 Fixture Categories:
     1. Redis Mocks           — mock_redis, mock_async_redis
@@ -20,6 +22,8 @@ Fixture Categories:
     5. Work Items/Results     — sample_work_item, factory, sample_work_result
     6. Statistical Utilities  — random_seed (numpy deterministic seeding)
     7. Context Utilities      — company context, transaction context
+    8. Project 3 Transactions — mock DB session, GL engine, discrepancy injector,
+       rework engine, transaction data factories, generation context, discrepancy config
 """
 
 # ---------------------------------------------------------------------------
@@ -81,6 +85,16 @@ from app.events.event_types import (
 )
 
 # ---------------------------------------------------------------------------
+# Internal Imports — Transaction System (app.transactions) [Project 3]
+# ---------------------------------------------------------------------------
+from decimal import Decimal, ROUND_HALF_UP
+import random
+
+# Note: P3 modules are imported conditionally or via string references
+# to avoid import errors when P3 modules are not yet built.
+# For mock-based fixtures, we use AsyncMock and MagicMock throughout.
+
+# ---------------------------------------------------------------------------
 # Deterministic UUIDs for Reproducible Tests
 # ---------------------------------------------------------------------------
 FIXED_AGENT_UUID = UUID("12345678-1234-5678-1234-567812345678")
@@ -88,6 +102,14 @@ FIXED_EMPLOYEE_UUID = UUID("22345678-2234-5678-2234-567822345678")
 FIXED_COMPANY_UUID = UUID("32345678-3234-5678-3234-567832345678")
 FIXED_WORKFLOW_UUID = UUID("42345678-4234-5678-4234-567842345678")
 FIXED_SIMULATION_UUID = UUID("52345678-5234-5678-5234-567852345678")
+
+# P3 — Project 3 Fixed UUIDs
+FIXED_TRANSACTION_UUID = UUID("62345678-6234-5678-6234-567862345678")
+FIXED_PO_UUID = UUID("72345678-7234-5678-7234-567872345678")
+FIXED_SO_UUID = UUID("82345678-8234-5678-8234-567882345678")
+FIXED_INVOICE_UUID = UUID("92345678-9234-5678-9234-567892345678")
+FIXED_JOURNAL_ENTRY_UUID = UUID("a2345678-a234-5678-a234-5678a2345678")
+FIXED_DISCREPANCY_UUID = UUID("b2345678-b234-5678-b234-5678b2345678")
 
 
 # =========================================================================
@@ -774,3 +796,598 @@ def sample_transaction_context() -> Dict[str, Any]:
         "risk_tolerance": 0.5,
         "compliance": 0.8,
     }
+
+
+# =========================================================================
+# Section 8: Project 3 — Transaction Workflow Fixtures
+# Per AAP Section 0.7.6: Test infrastructure for P2P, O2C, GL, Discrepancy, Rework
+# =========================================================================
+
+
+@pytest.fixture
+def mock_db_session():
+    """Provide an AsyncMock simulating Project 1's get_session() pattern.
+
+    Simulates the async context manager pattern:
+        async with get_session() as session:
+            await session.execute(...)
+            await session.commit()
+
+    The mock supports: execute(), commit(), rollback(), flush(), refresh(),
+    add(), delete(), and get() operations.
+
+    Returns:
+        An AsyncMock configured as a database session.
+    """
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=MagicMock())
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+    session.add = MagicMock()
+    session.delete = MagicMock()
+    session.get = AsyncMock(return_value=None)
+
+    # Make it work as async context manager
+    context_manager = AsyncMock()
+    context_manager.__aenter__ = AsyncMock(return_value=session)
+    context_manager.__aexit__ = AsyncMock(return_value=False)
+
+    return session
+
+
+@pytest.fixture
+def mock_gl_engine():
+    """Provide an AsyncMock of GLPostingEngine with pre-configured responses.
+
+    Pre-configured methods:
+        - post_journal_entry() → returns mock journal entry dict with balanced DR/CR
+        - validate_balance() → returns True (balanced)
+        - check_trial_balance() → returns True (trial balance zero)
+        - get_account_balance() → returns Decimal("10000.00")
+
+    Returns:
+        An AsyncMock configured as a GL Posting Engine.
+    """
+    engine = AsyncMock()
+    engine.post_journal_entry = AsyncMock(return_value={
+        "journal_entry_id": str(FIXED_JOURNAL_ENTRY_UUID),
+        "status": "posted",
+        "total_debits": Decimal("1000.00"),
+        "total_credits": Decimal("1000.00"),
+        "is_balanced": True,
+    })
+    engine.validate_balance = AsyncMock(return_value=True)
+    engine.check_trial_balance = AsyncMock(return_value=True)
+    engine.get_account_balance = AsyncMock(return_value=Decimal("10000.00"))
+    engine.get_metrics = MagicMock(return_value={
+        "total_entries_posted": 0,
+        "total_debits": Decimal("0.00"),
+        "total_credits": Decimal("0.00"),
+    })
+    return engine
+
+
+@pytest.fixture
+def mock_discrepancy_injector():
+    """Provide an AsyncMock of DiscrepancyInjector with configurable behavior.
+
+    Pre-configured with:
+        - injection_rate: 0.02 (2% default)
+        - should_inject() → returns False by default
+        - inject() → returns (original_transaction, None) by default
+        - get_metrics() → returns injection stats
+
+    Returns:
+        An AsyncMock configured as a Discrepancy Injector.
+    """
+    injector = AsyncMock()
+    injector.injection_rate = 0.02
+    injector.should_inject = MagicMock(return_value=False)
+    injector.inject = AsyncMock(side_effect=lambda txn, ctx: (txn, None))
+    injector.get_metrics = MagicMock(return_value={
+        "total_checked": 0,
+        "total_injected": 0,
+        "injection_rate": 0.02,
+        "types_injected": {},
+    })
+    return injector
+
+
+@pytest.fixture
+def mock_rework_engine():
+    """Provide an AsyncMock of ReworkLoopEngine with configurable behavior.
+
+    Pre-configured with:
+        - max_attempts: 3
+        - timeout_seconds: 30.0
+        - process_validation_failure() → returns resolved ReworkResult mock
+
+    Returns:
+        An AsyncMock configured as a Rework Loop Engine.
+    """
+    engine = AsyncMock()
+    engine.max_attempts = 3
+    engine.timeout_seconds = 30.0
+    engine.process_validation_failure = AsyncMock(return_value={
+        "transaction_id": str(FIXED_TRANSACTION_UUID),
+        "resolved": True,
+        "escalated": False,
+        "attempts": [],
+        "final_status": "resolved",
+        "total_duration_ms": 150.0,
+    })
+    engine.get_metrics = MagicMock(return_value={
+        "total_processed": 0,
+        "total_resolved": 0,
+        "total_escalated": 0,
+        "total_failed": 0,
+        "resolution_rate": 0.0,
+    })
+    return engine
+
+
+# =========================================================================
+# Section 8.5: Sample Transaction Data Factories
+# Factory fixtures for all 8 transaction types — each returns a callable
+# that produces sample data dicts with keyword-override support.
+# =========================================================================
+
+
+@pytest.fixture
+def sample_purchase_order() -> Callable[..., Dict[str, Any]]:
+    """Factory for sample Purchase Order data.
+
+    Returns:
+        A callable that creates PO header/lines dicts with vendor, products, amounts.
+        Supports keyword overrides for any field.
+    """
+    def _factory(**overrides: Any) -> Dict[str, Any]:
+        po = {
+            "transaction_id": str(FIXED_PO_UUID),
+            "transaction_type": "purchase_order",
+            "po_number": "PO-2025-0001",
+            "vendor_id": "V-001",
+            "vendor_name": "Acme Supplies",
+            "order_date": "2025-01-15",
+            "expected_delivery_date": "2025-02-15",
+            "status": "approved",
+            "currency": "USD",
+            "total_amount": Decimal("5000.00"),
+            "lines": [
+                {
+                    "line_number": 1,
+                    "product_id": "PROD-001",
+                    "description": "Office Supplies",
+                    "quantity": Decimal("100"),
+                    "unit_price": Decimal("25.00"),
+                    "line_total": Decimal("2500.00"),
+                },
+                {
+                    "line_number": 2,
+                    "product_id": "PROD-002",
+                    "description": "Computer Equipment",
+                    "quantity": Decimal("5"),
+                    "unit_price": Decimal("500.00"),
+                    "line_total": Decimal("2500.00"),
+                },
+            ],
+            "approval_chain": [
+                {"approver_role": "purchasing_manager", "approved": True}
+            ],
+            "simulation_id": str(FIXED_SIMULATION_UUID),
+        }
+        po.update(overrides)
+        return po
+    return _factory
+
+
+@pytest.fixture
+def sample_goods_receipt() -> Callable[..., Dict[str, Any]]:
+    """Factory for sample Goods Receipt data linked to a PO."""
+    def _factory(**overrides: Any) -> Dict[str, Any]:
+        receipt = {
+            "transaction_id": str(uuid4()),
+            "transaction_type": "goods_receipt",
+            "receipt_number": "GR-2025-0001",
+            "po_number": "PO-2025-0001",
+            "po_id": str(FIXED_PO_UUID),
+            "vendor_id": "V-001",
+            "receipt_date": "2025-02-10",
+            "status": "received",
+            "lines": [
+                {
+                    "line_number": 1,
+                    "product_id": "PROD-001",
+                    "quantity_received": Decimal("100"),
+                    "quantity_ordered": Decimal("100"),
+                },
+                {
+                    "line_number": 2,
+                    "product_id": "PROD-002",
+                    "quantity_received": Decimal("5"),
+                    "quantity_ordered": Decimal("5"),
+                },
+            ],
+            "simulation_id": str(FIXED_SIMULATION_UUID),
+        }
+        receipt.update(overrides)
+        return receipt
+    return _factory
+
+
+@pytest.fixture
+def sample_vendor_invoice() -> Callable[..., Dict[str, Any]]:
+    """Factory for sample Vendor Invoice data linked to a PO with AP coding."""
+    def _factory(**overrides: Any) -> Dict[str, Any]:
+        invoice = {
+            "transaction_id": str(FIXED_INVOICE_UUID),
+            "transaction_type": "vendor_invoice",
+            "invoice_number": "VINV-2025-0001",
+            "po_number": "PO-2025-0001",
+            "po_id": str(FIXED_PO_UUID),
+            "vendor_id": "V-001",
+            "vendor_name": "Acme Supplies",
+            "invoice_date": "2025-02-15",
+            "due_date": "2025-03-17",
+            "payment_terms": "Net 30",
+            "status": "pending_match",
+            "currency": "USD",
+            "total_amount": Decimal("5000.00"),
+            "tax_amount": Decimal("0.00"),
+            "lines": [
+                {
+                    "line_number": 1,
+                    "product_id": "PROD-001",
+                    "description": "Office Supplies",
+                    "quantity": Decimal("100"),
+                    "unit_price": Decimal("25.00"),
+                    "line_total": Decimal("2500.00"),
+                    "gl_account": "6100-00",
+                },
+                {
+                    "line_number": 2,
+                    "product_id": "PROD-002",
+                    "description": "Computer Equipment",
+                    "quantity": Decimal("5"),
+                    "unit_price": Decimal("500.00"),
+                    "line_total": Decimal("2500.00"),
+                    "gl_account": "1500-00",
+                },
+            ],
+            "simulation_id": str(FIXED_SIMULATION_UUID),
+        }
+        invoice.update(overrides)
+        return invoice
+    return _factory
+
+
+@pytest.fixture
+def sample_sales_order() -> Callable[..., Dict[str, Any]]:
+    """Factory for sample Sales Order data with customer, products."""
+    def _factory(**overrides: Any) -> Dict[str, Any]:
+        so = {
+            "transaction_id": str(FIXED_SO_UUID),
+            "transaction_type": "sales_order",
+            "so_number": "SO-2025-0001",
+            "customer_id": "C-001",
+            "customer_name": "Beta Corp",
+            "order_date": "2025-01-20",
+            "expected_ship_date": "2025-02-01",
+            "status": "confirmed",
+            "currency": "USD",
+            "total_amount": Decimal("8000.00"),
+            "credit_limit": Decimal("50000.00"),
+            "current_ar_balance": Decimal("12000.00"),
+            "lines": [
+                {
+                    "line_number": 1,
+                    "product_id": "PROD-010",
+                    "description": "Widget A",
+                    "quantity": Decimal("200"),
+                    "unit_price": Decimal("30.00"),
+                    "line_total": Decimal("6000.00"),
+                },
+                {
+                    "line_number": 2,
+                    "product_id": "PROD-011",
+                    "description": "Widget B",
+                    "quantity": Decimal("40"),
+                    "unit_price": Decimal("50.00"),
+                    "line_total": Decimal("2000.00"),
+                },
+            ],
+            "simulation_id": str(FIXED_SIMULATION_UUID),
+        }
+        so.update(overrides)
+        return so
+    return _factory
+
+
+@pytest.fixture
+def sample_shipment() -> Callable[..., Dict[str, Any]]:
+    """Factory for sample Shipment data linked to a SO."""
+    def _factory(**overrides: Any) -> Dict[str, Any]:
+        shipment = {
+            "transaction_id": str(uuid4()),
+            "transaction_type": "shipment",
+            "shipment_number": "SHP-2025-0001",
+            "so_number": "SO-2025-0001",
+            "so_id": str(FIXED_SO_UUID),
+            "customer_id": "C-001",
+            "ship_date": "2025-02-01",
+            "carrier": "FedEx",
+            "tracking_number": "TRACK-123456789",
+            "status": "shipped",
+            "lines": [
+                {
+                    "line_number": 1,
+                    "product_id": "PROD-010",
+                    "quantity_shipped": Decimal("200"),
+                    "quantity_ordered": Decimal("200"),
+                },
+                {
+                    "line_number": 2,
+                    "product_id": "PROD-011",
+                    "quantity_shipped": Decimal("40"),
+                    "quantity_ordered": Decimal("40"),
+                },
+            ],
+            "simulation_id": str(FIXED_SIMULATION_UUID),
+        }
+        shipment.update(overrides)
+        return shipment
+    return _factory
+
+
+@pytest.fixture
+def sample_customer_invoice() -> Callable[..., Dict[str, Any]]:
+    """Factory for sample Customer Invoice linked to a shipment."""
+    def _factory(**overrides: Any) -> Dict[str, Any]:
+        invoice = {
+            "transaction_id": str(uuid4()),
+            "transaction_type": "customer_invoice",
+            "invoice_number": "INV-2025-0001",
+            "so_number": "SO-2025-0001",
+            "so_id": str(FIXED_SO_UUID),
+            "customer_id": "C-001",
+            "customer_name": "Beta Corp",
+            "invoice_date": "2025-02-02",
+            "due_date": "2025-03-04",
+            "payment_terms": "Net 30",
+            "status": "outstanding",
+            "currency": "USD",
+            "total_amount": Decimal("8000.00"),
+            "lines": [
+                {
+                    "line_number": 1,
+                    "product_id": "PROD-010",
+                    "description": "Widget A",
+                    "quantity": Decimal("200"),
+                    "unit_price": Decimal("30.00"),
+                    "line_total": Decimal("6000.00"),
+                    "gl_account": "4100-00",
+                },
+                {
+                    "line_number": 2,
+                    "product_id": "PROD-011",
+                    "description": "Widget B",
+                    "quantity": Decimal("40"),
+                    "unit_price": Decimal("50.00"),
+                    "line_total": Decimal("2000.00"),
+                    "gl_account": "4100-00",
+                },
+            ],
+            "simulation_id": str(FIXED_SIMULATION_UUID),
+        }
+        invoice.update(overrides)
+        return invoice
+    return _factory
+
+
+@pytest.fixture
+def sample_journal_entry() -> Callable[..., Dict[str, Any]]:
+    """Factory for sample balanced Journal Entry with debit/credit lines.
+
+    Generates a balanced JE where SUM(debits) = SUM(credits) = $1000.00.
+    Per AAP Section 0.7.2: GL Balance Invariant within $0.01 tolerance.
+    """
+    def _factory(**overrides: Any) -> Dict[str, Any]:
+        je = {
+            "journal_entry_id": str(FIXED_JOURNAL_ENTRY_UUID),
+            "transaction_type": "journal_entry",
+            "je_number": "JE-2025-0001",
+            "posting_date": "2025-01-31",
+            "fiscal_period": "2025-01",
+            "description": "Monthly accrual entry",
+            "status": "posted",
+            "currency": "USD",
+            "total_debits": Decimal("1000.00"),
+            "total_credits": Decimal("1000.00"),
+            "lines": [
+                {
+                    "line_number": 1,
+                    "account_code": "6100-00",
+                    "account_name": "Office Supplies Expense",
+                    "debit": Decimal("1000.00"),
+                    "credit": Decimal("0.00"),
+                    "description": "Accrued supplies expense",
+                },
+                {
+                    "line_number": 2,
+                    "account_code": "2100-00",
+                    "account_name": "Accounts Payable",
+                    "debit": Decimal("0.00"),
+                    "credit": Decimal("1000.00"),
+                    "description": "Accrued AP",
+                },
+            ],
+            "simulation_id": str(FIXED_SIMULATION_UUID),
+        }
+        je.update(overrides)
+        return je
+    return _factory
+
+
+@pytest.fixture
+def sample_payment() -> Callable[..., Dict[str, Any]]:
+    """Factory for sample Payment with allocations."""
+    def _factory(**overrides: Any) -> Dict[str, Any]:
+        payment = {
+            "transaction_id": str(uuid4()),
+            "transaction_type": "vendor_payment",
+            "payment_number": "PAY-2025-0001",
+            "vendor_id": "V-001",
+            "vendor_name": "Acme Supplies",
+            "payment_date": "2025-03-15",
+            "payment_method": "ACH",
+            "total_amount": Decimal("5000.00"),
+            "discount_amount": Decimal("0.00"),
+            "net_amount": Decimal("5000.00"),
+            "status": "completed",
+            "currency": "USD",
+            "allocations": [
+                {
+                    "invoice_id": str(FIXED_INVOICE_UUID),
+                    "invoice_number": "VINV-2025-0001",
+                    "allocated_amount": Decimal("5000.00"),
+                    "discount_taken": Decimal("0.00"),
+                },
+            ],
+            "simulation_id": str(FIXED_SIMULATION_UUID),
+        }
+        payment.update(overrides)
+        return payment
+    return _factory
+
+
+# =========================================================================
+# Section 8.6: Deterministic Seeding Helpers
+# =========================================================================
+
+
+@pytest.fixture
+def deterministic_rng():
+    """Provide a seeded random.Random(42) instance for reproducible tests.
+
+    Per AAP Section 0.7.1: All random operations MUST use seeded random.Random
+    instances. This fixture provides a pre-seeded RNG that produces identical
+    sequences across test runs.
+
+    Returns:
+        A seeded ``random.Random(42)`` instance.
+    """
+    return random.Random(42)
+
+
+# =========================================================================
+# Section 8.7: Generation Context Factory
+# =========================================================================
+
+
+@pytest.fixture
+def sample_generation_context() -> Callable[..., Dict[str, Any]]:
+    """Factory for GenerationContext-compatible dicts.
+
+    Creates context dicts carrying simulation_id, current_date, fiscal_period,
+    discrepancy_config, rng_seed — all fields required by the GenerationContext
+    Pydantic model in app.transactions.base_generator.
+
+    Returns:
+        A callable that creates generation context dicts. Supports keyword overrides.
+    """
+    def _factory(**overrides: Any) -> Dict[str, Any]:
+        ctx = {
+            "simulation_id": str(FIXED_SIMULATION_UUID),
+            "trace_id": str(uuid4()),
+            "current_date": "2025-01-15",
+            "fiscal_period": "2025-01",
+            "fiscal_year": "2025",
+            "company_id": str(FIXED_COMPANY_UUID),
+            "rng_seed": 42,
+            "discrepancy_config": {
+                "enabled": True,
+                "injection_rate": 0.02,
+                "difficulty_distribution": {
+                    "easy": 0.70,
+                    "medium": 0.30,
+                    "hard": 0.00,
+                },
+                "auto_adjust_to_bounds": True,
+            },
+            "rework_config": {
+                "enabled": True,
+                "max_attempts": 3,
+                "timeout_seconds": 30.0,
+                "escalation_threshold": 0.05,
+            },
+        }
+        ctx.update(overrides)
+        return ctx
+    return _factory
+
+
+# =========================================================================
+# Section 8.8: Discrepancy Config Fixtures
+# =========================================================================
+
+
+@pytest.fixture
+def sample_discrepancy_config() -> Dict[str, Any]:
+    """Provide a standard discrepancy injection configuration.
+
+    Per AAP Section 0.7.5:
+        - Rate: 2% (±1% tolerance)
+        - Distribution: Easy 70%, Medium 30%, Hard 0%
+        - Auto-adjust: True
+    """
+    return {
+        "enabled": True,
+        "injection_rate": 0.02,
+        "difficulty_distribution": {
+            "easy": 0.70,
+            "medium": 0.30,
+            "hard": 0.00,
+        },
+        "auto_adjust_to_bounds": True,
+        "parameter_bounds": {
+            "duplicate_invoice_days_apart": {"min": 1, "max": 90},
+            "price_variance_percent": {"min": 0.01, "max": 0.50},
+            "quantity_variance_percent": {"min": 0.01, "max": 0.30},
+        },
+    }
+
+
+@pytest.fixture
+def sample_discrepancy_record() -> Callable[..., Dict[str, Any]]:
+    """Factory for sample discrepancy records (ground truth).
+
+    Generates records matching the 16-field ground truth schema from
+    app.discrepancies.ground_truth_generator.
+
+    Returns:
+        A callable that creates discrepancy record dicts.
+    """
+    def _factory(**overrides: Any) -> Dict[str, Any]:
+        record = {
+            "discrepancy_id": str(FIXED_DISCREPANCY_UUID),
+            "type_code": "P2P-001",
+            "category": "p2p",
+            "difficulty": "easy",
+            "description": "Duplicate Invoice",
+            "transaction_ids": [str(FIXED_INVOICE_UUID)],
+            "affected_fields": ["invoice_number", "amount"],
+            "original_values": {"invoice_number": "VINV-2025-0001"},
+            "modified_values": {"invoice_number": "VINV-2025-0001-DUP"},
+            "detection_method": "duplicate_check",
+            "financial_impact": str(Decimal("5000.00")),
+            "injection_timestamp": "2025-01-15T10:00:00Z",
+            "simulation_id": str(FIXED_SIMULATION_UUID),
+            "fiscal_period": "2025-01",
+            "is_within_bounds": True,
+            "parameters": {"days_apart": 5, "amount_variation_pct": 0.0},
+        }
+        record.update(overrides)
+        return record
+    return _factory
