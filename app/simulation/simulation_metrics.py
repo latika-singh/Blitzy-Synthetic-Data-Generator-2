@@ -1,19 +1,23 @@
 """Simulation performance metrics for the Agent & Orchestration Engine.
 
 This module provides three core components for tracking, aggregating, and
-validating simulation performance across all seven subsystems:
+validating simulation performance across all seven subsystems, including
+Project 3 Transaction Workflow metrics (P2P/O2C cycles, GL postings,
+discrepancy injection, rework loop, and period close operations):
 
 *   :class:`DailyMetricsSnapshot` — Pydantic V2 model capturing metrics for a
     single simulated business day (transactions, agents, LLM usage, events,
-    errors, timing).
+    errors, timing, and P3 transaction workflow counters).
 *   :class:`MonthlyMetricsAggregate` — Pydantic V2 model aggregating daily
-    snapshots into calendar-month rollups with computed averages.
+    snapshots into calendar-month rollups with computed averages and P3
+    transaction workflow totals.
 *   :class:`SimulationMetrics` — Stateful collector that records daily results
     from :class:`~app.simulation.day_context.DayContext`, maintains cumulative
-    counters, computes monthly aggregates, validates against the 20 measurable
-    performance thresholds (README.md §SUCCESS CRITERIA), and optionally
-    persists snapshots to Redis (key pattern ``simulation:{uuid}:metrics``
-    per AAP §0.4.4).
+    counters (including P3 workflow counters), computes monthly aggregates,
+    validates against the 26 measurable performance thresholds (20 from
+    README.md §SUCCESS CRITERIA plus 6 P3 thresholds from AAP §0.7.3), and
+    optionally persists snapshots to Redis (key pattern
+    ``simulation:{uuid}:metrics`` per AAP §0.4.4).
 
 The module is consumed primarily by
 :class:`~app.simulation.simulation_engine.SimulationEngine` after each
@@ -116,6 +120,37 @@ class DailyMetricsSnapshot(BaseModel):
     errors: int = 0
     """Total errors encountered during this day."""
 
+    # ── Project 3: Transaction Workflow Metrics ────────────────────
+    p2p_cycles_completed: int = 0
+    """Number of complete P2P cycles (PO→Receipt→Invoice→Payment) completed this day."""
+
+    o2c_cycles_completed: int = 0
+    """Number of complete O2C cycles (Order→Ship→Invoice→Payment) completed this day."""
+
+    gl_entries_posted: int = 0
+    """Number of General Ledger journal entries posted this day."""
+
+    discrepancies_injected: int = 0
+    """Number of discrepancies injected into transactions this day."""
+
+    ground_truths_created: int = 0
+    """Number of ground truth records created for injected discrepancies this day."""
+
+    rework_attempts: int = 0
+    """Number of rework loop attempts (fix attempts on failed transactions) this day."""
+
+    rework_successes: int = 0
+    """Number of successful rework fixes this day."""
+
+    rework_escalations: int = 0
+    """Number of rework escalations (exceeded max attempts or unresolvable) this day."""
+
+    period_closes_completed: int = 0
+    """Number of period close operations completed this day (0 or 1 typically)."""
+
+    trial_balance_checks_passed: int = 0
+    """Number of trial balance validations that passed this day."""
+
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
@@ -175,6 +210,37 @@ class MonthlyMetricsAggregate(BaseModel):
 
     total_events_published: int = 0
     """Sum of events published across all days."""
+
+    # ── Project 3: Monthly Transaction Workflow Aggregates ─────────
+    total_p2p_cycles_completed: int = 0
+    """Sum of P2P cycles completed across all days in this month."""
+
+    total_o2c_cycles_completed: int = 0
+    """Sum of O2C cycles completed across all days in this month."""
+
+    total_gl_entries_posted: int = 0
+    """Sum of GL journal entries posted across all days in this month."""
+
+    total_discrepancies_injected: int = 0
+    """Sum of discrepancies injected across all days in this month."""
+
+    total_ground_truths_created: int = 0
+    """Sum of ground truth records created across all days in this month."""
+
+    total_rework_attempts: int = 0
+    """Sum of rework attempts across all days in this month."""
+
+    total_rework_successes: int = 0
+    """Sum of successful rework fixes across all days in this month."""
+
+    total_rework_escalations: int = 0
+    """Sum of rework escalations across all days in this month."""
+
+    total_period_closes_completed: int = 0
+    """Sum of period close operations across all days in this month."""
+
+    total_trial_balance_checks_passed: int = 0
+    """Sum of trial balance checks passed across all days in this month."""
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +316,18 @@ class SimulationMetrics:
         self.total_events_published: int = 0
         self.total_duration_seconds: float = 0.0
 
+        # ── Project 3 cumulative counters ──
+        self.total_p2p_cycles_completed: int = 0
+        self.total_o2c_cycles_completed: int = 0
+        self.total_gl_entries_posted: int = 0
+        self.total_discrepancies_injected: int = 0
+        self.total_ground_truths_created: int = 0
+        self.total_rework_attempts: int = 0
+        self.total_rework_successes: int = 0
+        self.total_rework_escalations: int = 0
+        self.total_period_closes_completed: int = 0
+        self.total_trial_balance_checks_passed: int = 0
+
         # Wall-clock tracking
         self._start_time: float = time.monotonic()
 
@@ -296,6 +374,17 @@ class SimulationMetrics:
             day_duration_seconds=day_context.day_duration_seconds,
             events_published=day_context.events_published,
             errors=day_context.errors,
+            # P3 metrics (backward-compatible via getattr defaults)
+            p2p_cycles_completed=getattr(day_context, 'p2p_cycles_completed', 0),
+            o2c_cycles_completed=getattr(day_context, 'o2c_cycles_completed', 0),
+            gl_entries_posted=getattr(day_context, 'gl_entries_posted', 0),
+            discrepancies_injected=getattr(day_context, 'discrepancies_injected', 0),
+            ground_truths_created=getattr(day_context, 'ground_truths_created', 0),
+            rework_attempts=getattr(day_context, 'rework_attempts', 0),
+            rework_successes=getattr(day_context, 'rework_successes', 0),
+            rework_escalations=getattr(day_context, 'rework_escalations', 0),
+            period_closes_completed=getattr(day_context, 'period_closes_completed', 0),
+            trial_balance_checks_passed=getattr(day_context, 'trial_balance_checks_passed', 0),
         )
 
         # Append to history
@@ -312,6 +401,18 @@ class SimulationMetrics:
         self.total_events_published += snapshot.events_published
         self.total_duration_seconds += snapshot.day_duration_seconds
 
+        # P3 cumulative counters
+        self.total_p2p_cycles_completed += snapshot.p2p_cycles_completed
+        self.total_o2c_cycles_completed += snapshot.o2c_cycles_completed
+        self.total_gl_entries_posted += snapshot.gl_entries_posted
+        self.total_discrepancies_injected += snapshot.discrepancies_injected
+        self.total_ground_truths_created += snapshot.ground_truths_created
+        self.total_rework_attempts += snapshot.rework_attempts
+        self.total_rework_successes += snapshot.rework_successes
+        self.total_rework_escalations += snapshot.rework_escalations
+        self.total_period_closes_completed += snapshot.period_closes_completed
+        self.total_trial_balance_checks_passed += snapshot.trial_balance_checks_passed
+
         # Update monthly aggregate
         self._update_monthly_aggregate(snapshot)
 
@@ -325,6 +426,11 @@ class SimulationMetrics:
             llm_requests=snapshot.llm_requests,
             llm_cost_usd=round(snapshot.llm_cost_usd, 4),
             day_duration_seconds=round(snapshot.day_duration_seconds, 2),
+            p2p_cycles=snapshot.p2p_cycles_completed,
+            o2c_cycles=snapshot.o2c_cycles_completed,
+            gl_entries=snapshot.gl_entries_posted,
+            discrepancies=snapshot.discrepancies_injected,
+            rework_attempts=snapshot.rework_attempts,
         )
 
         return snapshot
@@ -396,6 +502,18 @@ class SimulationMetrics:
         agg.total_duration_seconds += snapshot.day_duration_seconds
         agg.total_errors += snapshot.errors
         agg.total_events_published += snapshot.events_published
+
+        # P3 monthly aggregates
+        agg.total_p2p_cycles_completed += snapshot.p2p_cycles_completed
+        agg.total_o2c_cycles_completed += snapshot.o2c_cycles_completed
+        agg.total_gl_entries_posted += snapshot.gl_entries_posted
+        agg.total_discrepancies_injected += snapshot.discrepancies_injected
+        agg.total_ground_truths_created += snapshot.ground_truths_created
+        agg.total_rework_attempts += snapshot.rework_attempts
+        agg.total_rework_successes += snapshot.rework_successes
+        agg.total_rework_escalations += snapshot.rework_escalations
+        agg.total_period_closes_completed += snapshot.period_closes_completed
+        agg.total_trial_balance_checks_passed += snapshot.trial_balance_checks_passed
 
         # Update running sums for averages
         acc.sum_agents_active += float(snapshot.agents_active)
@@ -471,6 +589,25 @@ class SimulationMetrics:
             "transaction_completion_rate": round(
                 self.total_transactions_completed
                 / max(self.total_transactions_generated, 1),
+                4,
+            ),
+            # P3 metrics
+            "total_p2p_cycles_completed": self.total_p2p_cycles_completed,
+            "total_o2c_cycles_completed": self.total_o2c_cycles_completed,
+            "total_gl_entries_posted": self.total_gl_entries_posted,
+            "total_discrepancies_injected": self.total_discrepancies_injected,
+            "total_ground_truths_created": self.total_ground_truths_created,
+            "total_rework_attempts": self.total_rework_attempts,
+            "total_rework_successes": self.total_rework_successes,
+            "total_rework_escalations": self.total_rework_escalations,
+            "total_period_closes_completed": self.total_period_closes_completed,
+            "total_trial_balance_checks_passed": self.total_trial_balance_checks_passed,
+            "rework_success_rate": round(
+                self.total_rework_successes / max(self.total_rework_attempts, 1),
+                4,
+            ),
+            "ground_truth_coverage": round(
+                self.total_ground_truths_created / max(self.total_discrepancies_injected, 1),
                 4,
             ),
         }
@@ -696,6 +833,60 @@ class SimulationMetrics:
                 "pass": None,
                 "note": "Evaluated after full month completes.",
             },
+            # ── Project 3: Transaction Performance Thresholds ──────────
+            # Criterion P3-#1 — P2P Transaction Rate
+            "p2p_transaction_rate": {
+                "threshold": ">= 50 cycles/minute",
+                "actual": None,
+                "pass": None,
+                "note": "Requires per-cycle timing instrumentation (P2P generators).",
+            },
+            # Criterion P3-#2 — O2C Transaction Rate
+            "o2c_transaction_rate": {
+                "threshold": ">= 60 cycles/minute",
+                "actual": None,
+                "pass": None,
+                "note": "Requires per-cycle timing instrumentation (O2C generators).",
+            },
+            # Criterion P3-#3 — GL Posting Rate
+            "gl_posting_rate": {
+                "threshold": ">= 200 entries/minute",
+                "actual": None,
+                "pass": None,
+                "note": "Requires per-posting timing instrumentation (GLPostingEngine).",
+            },
+            # Criterion P3-#4 — Transaction Completion Rate (P3)
+            "p3_transaction_completion_rate": {
+                "threshold": ">= 99.5%",
+                "actual": round(
+                    (self.total_p2p_cycles_completed + self.total_o2c_cycles_completed)
+                    / max(self.total_p2p_cycles_completed + self.total_o2c_cycles_completed + self.total_rework_escalations, 1),
+                    4,
+                ) if (self.total_p2p_cycles_completed + self.total_o2c_cycles_completed) > 0 else None,
+                "pass": (
+                    ((self.total_p2p_cycles_completed + self.total_o2c_cycles_completed)
+                     / max(self.total_p2p_cycles_completed + self.total_o2c_cycles_completed + self.total_rework_escalations, 1))
+                    >= 0.995
+                ) if (self.total_p2p_cycles_completed + self.total_o2c_cycles_completed) > 0 else None,
+            },
+            # Criterion P3-#5 — Rework Loop Completion Time
+            "rework_loop_completion": {
+                "threshold": "<= 30 seconds per transaction",
+                "actual": None,
+                "pass": None,
+                "note": "Requires per-rework timing instrumentation (ReworkLoopEngine).",
+            },
+            # Criterion P3-#6 — Ground Truth Coverage
+            "ground_truth_coverage": {
+                "threshold": "100% of discrepancies",
+                "actual": round(
+                    self.total_ground_truths_created / max(self.total_discrepancies_injected, 1),
+                    4,
+                ) if self.total_discrepancies_injected > 0 else None,
+                "pass": (
+                    self.total_ground_truths_created >= self.total_discrepancies_injected
+                ) if self.total_discrepancies_injected > 0 else None,
+            },
         }
 
         # Summarise pass/fail counts for the log entry
@@ -806,6 +997,18 @@ class SimulationMetrics:
                 data.get("total_duration_seconds", 0.0)
             )
 
+            # P3 counters
+            self.total_p2p_cycles_completed = int(data.get("total_p2p_cycles_completed", 0))
+            self.total_o2c_cycles_completed = int(data.get("total_o2c_cycles_completed", 0))
+            self.total_gl_entries_posted = int(data.get("total_gl_entries_posted", 0))
+            self.total_discrepancies_injected = int(data.get("total_discrepancies_injected", 0))
+            self.total_ground_truths_created = int(data.get("total_ground_truths_created", 0))
+            self.total_rework_attempts = int(data.get("total_rework_attempts", 0))
+            self.total_rework_successes = int(data.get("total_rework_successes", 0))
+            self.total_rework_escalations = int(data.get("total_rework_escalations", 0))
+            self.total_period_closes_completed = int(data.get("total_period_closes_completed", 0))
+            self.total_trial_balance_checks_passed = int(data.get("total_trial_balance_checks_passed", 0))
+
             logger.debug(
                 "metrics_loaded_from_redis",
                 simulation_id=self.simulation_id,
@@ -843,6 +1046,18 @@ class SimulationMetrics:
         self.total_errors = 0
         self.total_events_published = 0
         self.total_duration_seconds = 0.0
+
+        # P3 counters
+        self.total_p2p_cycles_completed = 0
+        self.total_o2c_cycles_completed = 0
+        self.total_gl_entries_posted = 0
+        self.total_discrepancies_injected = 0
+        self.total_ground_truths_created = 0
+        self.total_rework_attempts = 0
+        self.total_rework_successes = 0
+        self.total_rework_escalations = 0
+        self.total_period_closes_completed = 0
+        self.total_trial_balance_checks_passed = 0
 
         self._start_time = time.monotonic()
 
