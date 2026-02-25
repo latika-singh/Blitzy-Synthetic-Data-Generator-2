@@ -113,12 +113,13 @@ class TestRequiredArtifacts:
             "approval",
         ]
 
-    def test_vendor_invoice_requires_four_artifacts(self) -> None:
-        """Vendor invoice requires header, lines, 3-way match, GL entries."""
+    def test_vendor_invoice_requires_five_artifacts(self) -> None:
+        """Vendor invoice requires header, lines, 3-way match, match result, GL entries."""
         assert REQUIRED_ARTIFACTS["vendor_invoice"] == [
             "invoice_header",
             "invoice_lines",
             "three_way_match",
+            "three_way_match_result",  # P3: ThreeWayMatcher structured result
             "gl_entries",
         ]
 
@@ -189,7 +190,7 @@ class TestTransactionRegistration:
     def test_register_vendor_invoice_sets_correct_artifacts(
         self, orchestrator: TransactionOrchestrator
     ) -> None:
-        """Vendor invoice required artifacts match README specification."""
+        """Vendor invoice required artifacts match README specification (extended for P3)."""
         txn_id = orchestrator.register_transaction(
             sample_invoice_transaction(), "vendor_invoice"
         )
@@ -199,6 +200,7 @@ class TestTransactionRegistration:
             "invoice_header",
             "invoice_lines",
             "three_way_match",
+            "three_way_match_result",  # P3: ThreeWayMatcher structured result
             "gl_entries",
         ]
 
@@ -472,7 +474,7 @@ class TestCompletenessValidation:
     def test_complete_vendor_invoice(
         self, orchestrator: TransactionOrchestrator
     ) -> None:
-        """Vendor invoice with all 4 required artifacts is complete."""
+        """Vendor invoice with all 5 required artifacts is complete (extended for P3)."""
         txn_id = orchestrator.register_transaction(
             sample_invoice_transaction(), "vendor_invoice"
         )
@@ -480,6 +482,7 @@ class TestCompletenessValidation:
             "invoice_header",
             "invoice_lines",
             "three_way_match",
+            "three_way_match_result",  # P3: ThreeWayMatcher structured result
             "gl_entries",
         ]:
             orchestrator.add_artifact(txn_id, artifact_type, {"data": "test"})
@@ -1177,7 +1180,7 @@ class TestFullLifecycle:
     async def test_full_vendor_invoice_lifecycle(
         self, orchestrator: TransactionOrchestrator
     ) -> None:
-        """Complete vendor invoice lifecycle with all 4 artifacts."""
+        """Complete vendor invoice lifecycle with all 5 artifacts (extended for P3)."""
         txn_id = orchestrator.register_transaction(
             sample_invoice_transaction(), "vendor_invoice"
         )
@@ -1187,6 +1190,7 @@ class TestFullLifecycle:
             "invoice_header",
             "invoice_lines",
             "three_way_match",
+            "three_way_match_result",  # P3: ThreeWayMatcher structured result
             "gl_entries",
         ]:
             orchestrator.add_artifact(txn_id, artifact_type, {"data": artifact_type})
@@ -1198,7 +1202,7 @@ class TestFullLifecycle:
         state = orchestrator.get_transaction(txn_id)
         assert state is not None
         assert state.status == TransactionStatus.COMPLETE.value
-        assert len(state.artifacts) == 4
+        assert len(state.artifacts) == 5
 
     @pytest.mark.asyncio
     async def test_full_chained_lifecycle(
@@ -1221,7 +1225,7 @@ class TestFullLifecycle:
             "vendor_invoice",
             parent_transaction_id=po_id,
         )
-        for art in ["invoice_header", "invoice_lines", "three_way_match", "gl_entries"]:
+        for art in ["invoice_header", "invoice_lines", "three_way_match", "three_way_match_result", "gl_entries"]:
             orchestrator.add_artifact(inv_id, art, {"data": "test"})
         await orchestrator.mark_complete(inv_id)
 

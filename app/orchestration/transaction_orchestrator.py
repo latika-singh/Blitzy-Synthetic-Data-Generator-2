@@ -2,8 +2,13 @@
 
 Tracks required artifacts per transaction type (purchase orders, vendor invoices,
 vendor payments, sales orders, customer invoices/payments, journal entries, goods
-receipts) and manages the full lifecycle:
+receipts, accruals, period close, depreciation, recurring journals) and manages
+the full lifecycle:
     register → add_artifact → check_completeness → mark_complete
+
+Extended for Project 3 (Transaction Workflows & Discrepancies) with additional
+artifact types for three-way matching results, GL posting on goods receipts,
+accrual entries, and period close summaries.
 
 Supports parent/child transaction chaining for linked business processes and
 publishes TransactionCompleted events via EventBus for cross-subsystem
@@ -128,16 +133,17 @@ class TransactionState(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Required Artifacts Mapping (per README.md lines 349-355)
+# Required Artifacts Mapping (per README.md lines 349-355, extended for P3)
 # ---------------------------------------------------------------------------
 
 REQUIRED_ARTIFACTS: Dict[str, List[str]] = {
-    # CRITICAL: first 3 entries MUST exactly match README specification
+    # ── P2 Core Transaction Types (README specification) ──────────────
     "purchase_order": ["po_header", "po_lines", "approval"],
     "vendor_invoice": [
         "invoice_header",
         "invoice_lines",
         "three_way_match",
+        "three_way_match_result",  # P3: ThreeWayMatcher structured result
         "gl_entries",
     ],
     "vendor_payment": [
@@ -145,12 +151,20 @@ REQUIRED_ARTIFACTS: Dict[str, List[str]] = {
         "payment_allocation",
         "gl_entries",
     ],
-    # Additional transaction types with reasonable default artifacts
     "sales_order": ["order_header", "order_lines"],
     "customer_invoice": ["invoice_header", "invoice_lines", "gl_entries"],
     "customer_payment": ["payment_record", "payment_allocation", "gl_entries"],
     "journal_entry": ["je_header", "je_lines", "approval"],
-    "goods_receipt": ["receipt_header", "receipt_lines"],
+    "goods_receipt": [
+        "receipt_header",
+        "receipt_lines",
+        "gl_entries",  # P3: GoodsReceiptGenerator posts DR Inventory, CR AP Accrual
+    ],
+    # ── P3 Period Close & GL Transaction Types ────────────────────────
+    "accrual": ["accrual_entry", "je_header", "je_lines", "gl_entries"],
+    "period_close": ["period_close_summary", "trial_balance", "gl_entries"],
+    "depreciation": ["je_header", "je_lines", "gl_entries"],
+    "recurring_journal": ["je_header", "je_lines", "gl_entries"],
 }
 
 
