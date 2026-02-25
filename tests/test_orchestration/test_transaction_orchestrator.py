@@ -2,15 +2,17 @@
 
 Tests cover:
 - Required artifacts constant validation (README.md lines 349-355)
-- Transaction registration and state creation
+- P3 extended REQUIRED_ARTIFACTS validation (accrual, period_close,
+  depreciation, recurring_journal, extended vendor_invoice, goods_receipt)
+- Transaction registration and state creation (P2 and P3 types)
 - Artifact addition and status transitions
-- Completeness validation
+- Completeness validation (including P3 types)
 - Mark complete (async) with event publishing
-- Transaction chaining (parent-child relationships)
+- Transaction chaining (parent-child relationships, including P3 chains)
 - Failure and cancellation workflows
 - Query methods (get_transaction, get_incomplete, get_by_type, metrics)
 - TransactionState and TransactionStatus Pydantic V2 models
-- Full lifecycle integration tests
+- Full lifecycle integration tests (P2 and P3 types)
 
 Per AAP Section 0.7.5:
 - All external dependencies are mocked (EventBus via AsyncMock)
@@ -145,6 +147,111 @@ class TestRequiredArtifacts:
             assert isinstance(value, list)
             for item in value:
                 assert isinstance(item, str)
+
+
+# =========================================================================
+# Test Class — P3 Required Artifacts Validation (AAP Section 0.5.1)
+# =========================================================================
+
+
+class TestP3RequiredArtifacts:
+    """Verify REQUIRED_ARTIFACTS includes P3 transaction types and extensions.
+
+    Per AAP Section 0.5.1:
+    - vendor_invoice now includes three_way_match_result
+    - goods_receipt now includes gl_entries
+    - New types: accrual, period_close, depreciation, recurring_journal
+    """
+
+    def test_p3_transaction_types_present(self) -> None:
+        """All P3 transaction types must be defined in REQUIRED_ARTIFACTS."""
+        p3_types = {"accrual", "period_close", "depreciation", "recurring_journal"}
+        for txn_type in p3_types:
+            assert txn_type in REQUIRED_ARTIFACTS, (
+                f"P3 transaction type '{txn_type}' missing from REQUIRED_ARTIFACTS"
+            )
+
+    def test_accrual_requires_four_artifacts(self) -> None:
+        """Accrual requires accrual_entry, je_header, je_lines, gl_entries."""
+        assert REQUIRED_ARTIFACTS["accrual"] == [
+            "accrual_entry",
+            "je_header",
+            "je_lines",
+            "gl_entries",
+        ]
+
+    def test_period_close_requires_three_artifacts(self) -> None:
+        """Period close requires period_close_summary, trial_balance, gl_entries."""
+        assert REQUIRED_ARTIFACTS["period_close"] == [
+            "period_close_summary",
+            "trial_balance",
+            "gl_entries",
+        ]
+
+    def test_depreciation_requires_three_artifacts(self) -> None:
+        """Depreciation requires je_header, je_lines, gl_entries."""
+        assert REQUIRED_ARTIFACTS["depreciation"] == [
+            "je_header",
+            "je_lines",
+            "gl_entries",
+        ]
+
+    def test_recurring_journal_requires_three_artifacts(self) -> None:
+        """Recurring journal requires je_header, je_lines, gl_entries."""
+        assert REQUIRED_ARTIFACTS["recurring_journal"] == [
+            "je_header",
+            "je_lines",
+            "gl_entries",
+        ]
+
+    def test_goods_receipt_now_requires_gl_entries(self) -> None:
+        """P3 extended goods_receipt includes gl_entries for inventory posting."""
+        assert "gl_entries" in REQUIRED_ARTIFACTS["goods_receipt"]
+        assert REQUIRED_ARTIFACTS["goods_receipt"] == [
+            "receipt_header",
+            "receipt_lines",
+            "gl_entries",
+        ]
+
+    def test_vendor_invoice_includes_three_way_match_result(self) -> None:
+        """P3 extended vendor_invoice includes three_way_match_result artifact."""
+        assert "three_way_match_result" in REQUIRED_ARTIFACTS["vendor_invoice"]
+        assert "three_way_match" in REQUIRED_ARTIFACTS["vendor_invoice"]  # Original still present
+
+    def test_p3_artifacts_include_expected_p3_specific_keys(self) -> None:
+        """P3-specific artifact keys exist across the REQUIRED_ARTIFACTS mapping."""
+        all_artifacts = []
+        for artifacts_list in REQUIRED_ARTIFACTS.values():
+            all_artifacts.extend(artifacts_list)
+        # P3-specific artifact types must appear somewhere
+        assert "three_way_match_result" in all_artifacts
+        assert "accrual_entry" in all_artifacts
+        assert "period_close_summary" in all_artifacts
+        assert "trial_balance" in all_artifacts
+
+    def test_total_transaction_types_count(self) -> None:
+        """REQUIRED_ARTIFACTS should have 12 transaction types (8 original + 4 P3 new)."""
+        assert len(REQUIRED_ARTIFACTS) == 12
+
+    def test_original_types_unchanged(self) -> None:
+        """All 8 original P2 transaction types still present with correct artifacts."""
+        # purchase_order unchanged
+        assert REQUIRED_ARTIFACTS["purchase_order"] == ["po_header", "po_lines", "approval"]
+        # vendor_payment unchanged
+        assert REQUIRED_ARTIFACTS["vendor_payment"] == ["payment_record", "payment_allocation", "gl_entries"]
+        # sales_order unchanged
+        assert REQUIRED_ARTIFACTS["sales_order"] == ["order_header", "order_lines"]
+        # customer_invoice unchanged
+        assert REQUIRED_ARTIFACTS["customer_invoice"] == ["invoice_header", "invoice_lines", "gl_entries"]
+        # customer_payment unchanged
+        assert REQUIRED_ARTIFACTS["customer_payment"] == ["payment_record", "payment_allocation", "gl_entries"]
+        # journal_entry unchanged
+        assert REQUIRED_ARTIFACTS["journal_entry"] == ["je_header", "je_lines", "approval"]
+
+    def test_all_artifact_values_are_non_empty_lists(self) -> None:
+        """Every REQUIRED_ARTIFACTS entry must have at least one artifact."""
+        for txn_type, artifacts in REQUIRED_ARTIFACTS.items():
+            assert len(artifacts) > 0, f"Transaction type '{txn_type}' has empty artifact list"
 
 
 # =========================================================================
@@ -294,6 +401,85 @@ class TestTransactionRegistration:
             for _ in range(10)
         ]
         assert len(set(ids)) == 10
+
+
+# =========================================================================
+# Test Class — P3 Transaction Registration (AAP Section 0.5.1)
+# =========================================================================
+
+
+class TestP3TransactionRegistration:
+    """Tests for registering P3-specific transaction types."""
+
+    def test_register_accrual_transaction(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """Accrual transaction registers with correct required artifacts."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "GRNI Accrual", "amount": 5000.00, "fiscal_period": "2025-01"},
+            "accrual",
+        )
+        state = orchestrator.get_transaction(txn_id)
+        assert state is not None
+        assert state.transaction_type == "accrual"
+        assert state.required_artifacts == [
+            "accrual_entry", "je_header", "je_lines", "gl_entries"
+        ]
+
+    def test_register_period_close_transaction(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """Period close transaction registers with correct required artifacts."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "January 2025 Period Close", "fiscal_period": "2025-01"},
+            "period_close",
+        )
+        state = orchestrator.get_transaction(txn_id)
+        assert state is not None
+        assert state.transaction_type == "period_close"
+        assert state.required_artifacts == [
+            "period_close_summary", "trial_balance", "gl_entries"
+        ]
+
+    def test_register_depreciation_transaction(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """Depreciation transaction registers with correct required artifacts."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "Monthly depreciation", "amount": 1500.00},
+            "depreciation",
+        )
+        state = orchestrator.get_transaction(txn_id)
+        assert state is not None
+        assert state.transaction_type == "depreciation"
+        assert state.required_artifacts == ["je_header", "je_lines", "gl_entries"]
+
+    def test_register_recurring_journal_transaction(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """Recurring journal transaction registers with correct required artifacts."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "Monthly rent expense", "amount": 3000.00},
+            "recurring_journal",
+        )
+        state = orchestrator.get_transaction(txn_id)
+        assert state is not None
+        assert state.transaction_type == "recurring_journal"
+        assert state.required_artifacts == ["je_header", "je_lines", "gl_entries"]
+
+    def test_register_goods_receipt_with_gl_entries(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """P3-extended goods_receipt now requires gl_entries alongside receipt artifacts."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "Receipt for PO-001", "po_id": "PO-001"},
+            "goods_receipt",
+        )
+        state = orchestrator.get_transaction(txn_id)
+        assert state is not None
+        assert "gl_entries" in state.required_artifacts
+        assert "receipt_header" in state.required_artifacts
+        assert "receipt_lines" in state.required_artifacts
 
 
 # =========================================================================
@@ -582,6 +768,113 @@ class TestCompletenessValidation:
         # No artifacts added — all 3 are missing
         missing = orchestrator.get_missing_artifacts(txn_id)
         assert missing == sorted(missing)
+
+
+# =========================================================================
+# Test Class — P3 Completeness Validation (AAP Section 0.5.1)
+# =========================================================================
+
+
+class TestP3CompletenessValidation:
+    """Tests for P3 transaction type artifact completeness checking."""
+
+    def test_complete_accrual_transaction(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """Accrual with all 4 required artifacts is complete."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "GRNI Accrual"}, "accrual"
+        )
+        for art in ["accrual_entry", "je_header", "je_lines", "gl_entries"]:
+            orchestrator.add_artifact(txn_id, art, {"data": "test"})
+        assert orchestrator.check_completeness(txn_id) is True
+
+    def test_incomplete_accrual_missing_gl_entries(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """Accrual missing gl_entries is incomplete."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "Accrual"}, "accrual"
+        )
+        for art in ["accrual_entry", "je_header", "je_lines"]:
+            orchestrator.add_artifact(txn_id, art, {"data": "test"})
+        assert orchestrator.check_completeness(txn_id) is False
+        missing = orchestrator.get_missing_artifacts(txn_id)
+        assert "gl_entries" in missing
+
+    def test_complete_period_close_transaction(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """Period close with all 3 required artifacts is complete."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "Period Close"}, "period_close"
+        )
+        for art in ["period_close_summary", "trial_balance", "gl_entries"]:
+            orchestrator.add_artifact(txn_id, art, {"data": "test"})
+        assert orchestrator.check_completeness(txn_id) is True
+
+    def test_incomplete_period_close_missing_trial_balance(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """Period close missing trial_balance is incomplete."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "Period Close"}, "period_close"
+        )
+        orchestrator.add_artifact(txn_id, "period_close_summary", {"data": "test"})
+        orchestrator.add_artifact(txn_id, "gl_entries", {"data": "test"})
+        assert orchestrator.check_completeness(txn_id) is False
+        missing = orchestrator.get_missing_artifacts(txn_id)
+        assert "trial_balance" in missing
+
+    def test_complete_depreciation_transaction(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """Depreciation with all 3 required artifacts is complete."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "Depreciation"}, "depreciation"
+        )
+        for art in ["je_header", "je_lines", "gl_entries"]:
+            orchestrator.add_artifact(txn_id, art, {"data": "test"})
+        assert orchestrator.check_completeness(txn_id) is True
+
+    def test_complete_recurring_journal_transaction(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """Recurring journal with all 3 required artifacts is complete."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "Recurring JE"}, "recurring_journal"
+        )
+        for art in ["je_header", "je_lines", "gl_entries"]:
+            orchestrator.add_artifact(txn_id, art, {"data": "test"})
+        assert orchestrator.check_completeness(txn_id) is True
+
+    def test_complete_goods_receipt_with_gl_entries(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """P3-extended goods_receipt requires gl_entries to be complete."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "GR"}, "goods_receipt"
+        )
+        # Only receipt_header and receipt_lines — missing gl_entries
+        orchestrator.add_artifact(txn_id, "receipt_header", {"data": "test"})
+        orchestrator.add_artifact(txn_id, "receipt_lines", {"data": "test"})
+        assert orchestrator.check_completeness(txn_id) is False
+        # Add gl_entries to complete
+        orchestrator.add_artifact(txn_id, "gl_entries", {"data": "test"})
+        assert orchestrator.check_completeness(txn_id) is True
+
+    def test_p3_types_with_extra_artifacts_still_complete(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """P3 transactions with extra non-required artifacts remain complete."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "Accrual"}, "accrual"
+        )
+        for art in ["accrual_entry", "je_header", "je_lines", "gl_entries"]:
+            orchestrator.add_artifact(txn_id, art, {"data": "test"})
+        # Add extra artifact
+        orchestrator.add_artifact(txn_id, "ground_truth", {"data": "test"})
+        assert orchestrator.check_completeness(txn_id) is True
 
 
 # =========================================================================
@@ -1313,3 +1606,206 @@ class TestFullLifecycle:
         assert metrics["total_failed"] == 1
         assert metrics["total_cancelled"] == 1
         assert metrics["active_transactions"] == 0
+
+
+# =========================================================================
+# Test Class — P3 Full Lifecycle Integration (AAP Section 0.5.1)
+# =========================================================================
+
+
+class TestP3FullLifecycle:
+    """End-to-end lifecycle tests for P3 transaction types."""
+
+    @pytest.mark.asyncio
+    async def test_full_accrual_lifecycle(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """Complete accrual lifecycle: register → add all → complete."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "GRNI Accrual", "fiscal_period": "2025-01"},
+            "accrual",
+        )
+        assert orchestrator.check_completeness(txn_id) is False
+
+        for art in ["accrual_entry", "je_header", "je_lines", "gl_entries"]:
+            orchestrator.add_artifact(txn_id, art, {"data": art})
+
+        assert orchestrator.check_completeness(txn_id) is True
+        result = await orchestrator.mark_complete(txn_id)
+        assert result is True
+
+        state = orchestrator.get_transaction(txn_id)
+        assert state is not None
+        assert state.status == TransactionStatus.COMPLETE.value
+        assert state.completed_at is not None
+        assert len(state.artifacts) == 4
+
+    @pytest.mark.asyncio
+    async def test_full_period_close_lifecycle(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """Complete period close lifecycle: register → add all → complete."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "Jan 2025 Close", "fiscal_period": "2025-01"},
+            "period_close",
+        )
+        assert orchestrator.check_completeness(txn_id) is False
+
+        for art in ["period_close_summary", "trial_balance", "gl_entries"]:
+            orchestrator.add_artifact(txn_id, art, {"data": art})
+
+        assert orchestrator.check_completeness(txn_id) is True
+        result = await orchestrator.mark_complete(txn_id)
+        assert result is True
+
+        state = orchestrator.get_transaction(txn_id)
+        assert state is not None
+        assert state.status == TransactionStatus.COMPLETE.value
+        assert len(state.artifacts) == 3
+
+    @pytest.mark.asyncio
+    async def test_full_depreciation_lifecycle(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """Complete depreciation lifecycle: register → add all → complete."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "Monthly depreciation"}, "depreciation"
+        )
+        for art in ["je_header", "je_lines", "gl_entries"]:
+            orchestrator.add_artifact(txn_id, art, {"data": art})
+        assert orchestrator.check_completeness(txn_id) is True
+        result = await orchestrator.mark_complete(txn_id)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_full_recurring_journal_lifecycle(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """Complete recurring journal lifecycle: register → add all → complete."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "Monthly rent"}, "recurring_journal"
+        )
+        for art in ["je_header", "je_lines", "gl_entries"]:
+            orchestrator.add_artifact(txn_id, art, {"data": art})
+        assert orchestrator.check_completeness(txn_id) is True
+        result = await orchestrator.mark_complete(txn_id)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_p3_chained_period_close_lifecycle(
+        self,
+        orchestrator: TransactionOrchestrator,
+        mock_event_bus: AsyncMock,
+    ) -> None:
+        """Period close chain: accrual → depreciation → period_close."""
+        # Register and complete accrual
+        accrual_id = orchestrator.register_transaction(
+            {"description": "GRNI Accrual"}, "accrual"
+        )
+        for art in ["accrual_entry", "je_header", "je_lines", "gl_entries"]:
+            orchestrator.add_artifact(accrual_id, art, {"data": "test"})
+        await orchestrator.mark_complete(accrual_id)
+
+        # Register depreciation linked to accrual
+        depr_id = orchestrator.register_transaction(
+            {"description": "Depreciation"},
+            "depreciation",
+            parent_transaction_id=accrual_id,
+        )
+        for art in ["je_header", "je_lines", "gl_entries"]:
+            orchestrator.add_artifact(depr_id, art, {"data": "test"})
+        await orchestrator.mark_complete(depr_id)
+
+        # Register period close linked to depreciation
+        close_id = orchestrator.register_transaction(
+            {"description": "Period Close"},
+            "period_close",
+            parent_transaction_id=depr_id,
+        )
+        for art in ["period_close_summary", "trial_balance", "gl_entries"]:
+            orchestrator.add_artifact(close_id, art, {"data": "test"})
+        await orchestrator.mark_complete(close_id)
+
+        # Verify full chain
+        chain = orchestrator.get_transaction_chain(close_id)
+        assert len(chain) == 3
+        for txn_state in chain:
+            assert txn_state.status == TransactionStatus.COMPLETE.value
+
+        # Metrics
+        assert orchestrator.metrics["total_completed"] == 3
+        assert mock_event_bus.publish.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_p3_goods_receipt_lifecycle_with_gl_entries(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """P3-extended goods_receipt lifecycle requires gl_entries for completion."""
+        txn_id = orchestrator.register_transaction(
+            {"description": "GR against PO-001"}, "goods_receipt"
+        )
+        # Incomplete without gl_entries
+        orchestrator.add_artifact(txn_id, "receipt_header", {"data": "test"})
+        orchestrator.add_artifact(txn_id, "receipt_lines", {"data": "test"})
+        assert orchestrator.check_completeness(txn_id) is False
+
+        # Complete with gl_entries
+        orchestrator.add_artifact(txn_id, "gl_entries", {"data": "test"})
+        assert orchestrator.check_completeness(txn_id) is True
+        result = await orchestrator.mark_complete(txn_id)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_p3_mixed_p2_p3_lifecycle(
+        self,
+        orchestrator: TransactionOrchestrator,
+        mock_event_bus: AsyncMock,
+    ) -> None:
+        """Lifecycle mixing P2 (PO) and P3 (accrual) transaction types."""
+        # P2 PO lifecycle
+        po_id = orchestrator.register_transaction(
+            sample_po_transaction(), "purchase_order"
+        )
+        for art in ["po_header", "po_lines", "approval"]:
+            orchestrator.add_artifact(po_id, art, {"data": "test"})
+        await orchestrator.mark_complete(po_id)
+
+        # P3 accrual lifecycle linked to PO
+        accrual_id = orchestrator.register_transaction(
+            {"description": "PO accrual"},
+            "accrual",
+            parent_transaction_id=po_id,
+        )
+        for art in ["accrual_entry", "je_header", "je_lines", "gl_entries"]:
+            orchestrator.add_artifact(accrual_id, art, {"data": "test"})
+        await orchestrator.mark_complete(accrual_id)
+
+        # Both should be complete
+        chain = orchestrator.get_transaction_chain(accrual_id)
+        assert len(chain) == 2
+        for txn in chain:
+            assert txn.status == TransactionStatus.COMPLETE.value
+
+        # Metrics
+        metrics = orchestrator.get_metrics()
+        assert metrics["total_registered"] == 2
+        assert metrics["total_completed"] == 2
+        assert metrics["by_type"]["purchase_order"] == 1
+        assert metrics["by_type"]["accrual"] == 1
+
+    def test_p3_metrics_by_type_breakdown(
+        self, orchestrator: TransactionOrchestrator
+    ) -> None:
+        """P3 types appear correctly in get_metrics by_type breakdown."""
+        orchestrator.register_transaction({"desc": "a"}, "accrual")
+        orchestrator.register_transaction({"desc": "d"}, "depreciation")
+        orchestrator.register_transaction({"desc": "p"}, "period_close")
+        orchestrator.register_transaction({"desc": "r"}, "recurring_journal")
+        orchestrator.register_transaction({"desc": "g"}, "goods_receipt")
+
+        metrics = orchestrator.get_metrics()
+        assert metrics["by_type"]["accrual"] == 1
+        assert metrics["by_type"]["depreciation"] == 1
+        assert metrics["by_type"]["period_close"] == 1
+        assert metrics["by_type"]["recurring_journal"] == 1
+        assert metrics["by_type"]["goods_receipt"] == 1
