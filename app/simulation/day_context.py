@@ -25,8 +25,14 @@ Key design decisions
 * Convenience helpers (``is_period_closing``, ``is_quarter_end``,
   ``is_year_end``, ``transaction_completion_rate``, ``total_agent_count``) and
   batch-update methods (``update_from_agent_metrics``,
-  ``update_from_llm_metrics``) reduce boilerplate in consuming code.
+  ``update_from_llm_metrics``, ``update_from_p3_metrics``) reduce boilerplate
+  in consuming code.
 * A ``create_for_date`` classmethod factory enables clean instantiation.
+
+Extends the base daily state with Project 3 fields for transaction workflow
+state (open POs, pending invoices, GL entries, rework items) and transaction
+workflow metrics (P2P/O2C cycle counts, discrepancy injection, rework loop,
+GL posting, period close).
 
 Typical usage::
 
@@ -41,7 +47,7 @@ Typical usage::
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, List
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -124,6 +130,10 @@ class DayContext(BaseModel):
                 "llm_requests": 30,
                 "llm_cost_usd": 1.50,
                 "day_duration_seconds": 22.5,
+                "p2p_cycles_completed": 5,
+                "o2c_cycles_completed": 8,
+                "gl_entries_posted": 26,
+                "discrepancies_injected": 1,
             }
         },
     )
@@ -213,6 +223,51 @@ class DayContext(BaseModel):
         description="Vendor invoices produced by ExternalWorldManager.",
     )
 
+    # -- P3: Transaction Workflow State ----------------------------------------
+
+    open_purchase_orders: List[Any] = Field(
+        default_factory=list,
+        description=(
+            "Purchase orders awaiting goods receipt. Enables "
+            "GoodsReceiptGenerator to find open POs for receipt processing."
+        ),
+    )
+    pending_vendor_invoices: List[Any] = Field(
+        default_factory=list,
+        description=(
+            "Vendor invoices awaiting three-way match. Enables "
+            "VendorInvoiceProcessor to process pending invoices."
+        ),
+    )
+    open_sales_orders: List[Any] = Field(
+        default_factory=list,
+        description=(
+            "Sales orders awaiting shipment. Enables "
+            "ShipmentGenerator to find open SOs for shipment processing."
+        ),
+    )
+    pending_customer_invoices: List[Any] = Field(
+        default_factory=list,
+        description=(
+            "Customer invoices awaiting payment. Enables "
+            "CustomerPaymentProcessor to process pending invoices."
+        ),
+    )
+    unposted_gl_entries: List[Any] = Field(
+        default_factory=list,
+        description=(
+            "GL entries pending batch posting. Enables "
+            "GLPostingEngine to post pending entries in batch."
+        ),
+    )
+    active_rework_items: List[Any] = Field(
+        default_factory=list,
+        description=(
+            "Transactions currently in the rework loop awaiting "
+            "fix scenario application or escalation."
+        ),
+    )
+
     # -- LLM usage ----------------------------------------------------------
 
     llm_requests: int = Field(
@@ -262,6 +317,59 @@ class DayContext(BaseModel):
         description="Total warnings encountered during this day.",
     )
 
+    # -- P3: Transaction Workflow Metrics ---------------------------------------
+
+    p2p_cycles_completed: int = Field(
+        default=0,
+        ge=0,
+        description="Number of complete P2P cycles (PO→Receipt→Invoice→Payment) this day.",
+    )
+    o2c_cycles_completed: int = Field(
+        default=0,
+        ge=0,
+        description="Number of complete O2C cycles (Order→Ship→Invoice→Payment) this day.",
+    )
+    gl_entries_posted: int = Field(
+        default=0,
+        ge=0,
+        description="Number of GL journal entries posted this day.",
+    )
+    discrepancies_injected: int = Field(
+        default=0,
+        ge=0,
+        description="Number of discrepancies injected into transactions this day.",
+    )
+    ground_truths_created: int = Field(
+        default=0,
+        ge=0,
+        description="Number of ground truth records created for injected discrepancies this day.",
+    )
+    rework_attempts: int = Field(
+        default=0,
+        ge=0,
+        description="Number of rework loop attempts (fix attempts on failed transactions) this day.",
+    )
+    rework_successes: int = Field(
+        default=0,
+        ge=0,
+        description="Number of successful rework fixes this day.",
+    )
+    rework_escalations: int = Field(
+        default=0,
+        ge=0,
+        description="Number of rework escalations (exceeded max attempts or unresolvable) this day.",
+    )
+    period_closes_completed: int = Field(
+        default=0,
+        ge=0,
+        description="Number of period close operations completed this day (0 or 1 typically).",
+    )
+    trial_balance_checks_passed: int = Field(
+        default=0,
+        ge=0,
+        description="Number of trial balance validations that passed this day.",
+    )
+
     # -- Metadata -----------------------------------------------------------
 
     metadata: Dict[str, Any] = Field(
@@ -306,6 +414,17 @@ class DayContext(BaseModel):
             "llm_requests": self.llm_requests,
             "llm_cost_usd": round(self.llm_cost_usd, 4),
             "duration_seconds": round(self.day_duration_seconds, 2),
+            # P3: Transaction Workflow Metrics
+            "p2p_cycles_completed": self.p2p_cycles_completed,
+            "o2c_cycles_completed": self.o2c_cycles_completed,
+            "gl_entries_posted": self.gl_entries_posted,
+            "discrepancies_injected": self.discrepancies_injected,
+            "ground_truths_created": self.ground_truths_created,
+            "rework_attempts": self.rework_attempts,
+            "rework_successes": self.rework_successes,
+            "rework_escalations": self.rework_escalations,
+            "period_closes_completed": self.period_closes_completed,
+            "trial_balance_checks_passed": self.trial_balance_checks_passed,
         }
 
     def is_period_closing(self) -> bool:
@@ -343,6 +462,29 @@ class DayContext(BaseModel):
     def total_agent_count(self) -> int:
         """Total number of agents across all states (active + idle + error)."""
         return self.agents_active + self.agents_idle + self.agents_error
+
+    @property
+    def rework_success_rate(self) -> float:
+        """Fraction of rework attempts that succeeded.
+
+        Returns a value in ``[0.0, 1.0]``.  When no rework attempts have
+        been made the rate is ``0.0``.
+        """
+        return self.rework_successes / max(self.rework_attempts, 1)
+
+    @property
+    def ground_truth_coverage(self) -> float:
+        """Fraction of injected discrepancies with corresponding ground truth records.
+
+        Returns a value in ``[0.0, 1.0]``.  Target is 100% (1.0).
+        When no discrepancies have been injected the rate is ``0.0``.
+        """
+        return self.ground_truths_created / max(self.discrepancies_injected, 1)
+
+    @property
+    def total_p3_transactions(self) -> int:
+        """Total P3 transaction cycles (P2P + O2C) completed this day."""
+        return self.p2p_cycles_completed + self.o2c_cycles_completed
 
     # -----------------------------------------------------------------------
     # Batch-update helpers
@@ -397,6 +539,55 @@ class DayContext(BaseModel):
         self.llm_requests = requests
         self.llm_cost_usd = cost_usd
         self.llm_average_latency_seconds = avg_latency
+
+    def update_from_p3_metrics(
+        self,
+        p2p_cycles: int = 0,
+        o2c_cycles: int = 0,
+        gl_entries: int = 0,
+        discrepancies: int = 0,
+        ground_truths: int = 0,
+        rework_attempts: int = 0,
+        rework_successes: int = 0,
+        rework_escalations: int = 0,
+        period_closes: int = 0,
+        trial_balance_passed: int = 0,
+    ) -> None:
+        """Set all P3 transaction workflow metric fields in one call.
+
+        Parameters
+        ----------
+        p2p_cycles:
+            Complete P2P cycles (PO→Receipt→Invoice→Payment).
+        o2c_cycles:
+            Complete O2C cycles (Order→Ship→Invoice→Payment).
+        gl_entries:
+            GL journal entries posted.
+        discrepancies:
+            Discrepancies injected into transactions.
+        ground_truths:
+            Ground truth records created.
+        rework_attempts:
+            Rework loop fix attempts.
+        rework_successes:
+            Successful rework fixes.
+        rework_escalations:
+            Rework escalations (unresolvable errors).
+        period_closes:
+            Period close operations completed.
+        trial_balance_passed:
+            Trial balance validations passed.
+        """
+        self.p2p_cycles_completed = p2p_cycles
+        self.o2c_cycles_completed = o2c_cycles
+        self.gl_entries_posted = gl_entries
+        self.discrepancies_injected = discrepancies
+        self.ground_truths_created = ground_truths
+        self.rework_attempts = rework_attempts
+        self.rework_successes = rework_successes
+        self.rework_escalations = rework_escalations
+        self.period_closes_completed = period_closes
+        self.trial_balance_checks_passed = trial_balance_passed
 
     # -----------------------------------------------------------------------
     # Factory

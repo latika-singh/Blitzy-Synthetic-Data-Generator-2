@@ -310,7 +310,7 @@ class TestDayContext:
         assert len(ctx.simulation_id) > 0
 
     def test_day_context_to_daily_summary_dict(self) -> None:
-        """to_daily_summary_dict returns the exact 7 keys per README.md 1748-1757."""
+        """to_daily_summary_dict returns the expected keys per README.md 1748-1757 plus P3 metrics."""
         ctx = DayContext(
             simulation_date=date(2024, 1, 2),
             transactions_generated=45,
@@ -329,6 +329,17 @@ class TestDayContext:
             "llm_requests",
             "llm_cost_usd",
             "duration_seconds",
+            # P3: Transaction Workflow Metrics
+            "p2p_cycles_completed",
+            "o2c_cycles_completed",
+            "gl_entries_posted",
+            "discrepancies_injected",
+            "ground_truths_created",
+            "rework_attempts",
+            "rework_successes",
+            "rework_escalations",
+            "period_closes_completed",
+            "trial_balance_checks_passed",
         }
         assert set(summary.keys()) == expected_keys
         assert summary["simulation_date"] == "2024-01-02"
@@ -336,6 +347,10 @@ class TestDayContext:
         assert summary["agents_active"] == 12
         assert summary["llm_requests"] == 30
         assert summary["duration_seconds"] == 22.5
+        # P3 metrics default to 0
+        assert summary["p2p_cycles_completed"] == 0
+        assert summary["o2c_cycles_completed"] == 0
+        assert summary["gl_entries_posted"] == 0
 
     def test_day_context_fiscal_period_info(self) -> None:
         """DayContext embeds FiscalPeriodInfo correctly."""
