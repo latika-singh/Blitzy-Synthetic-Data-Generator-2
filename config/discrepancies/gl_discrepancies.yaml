@@ -1,0 +1,357 @@
+# =============================================================================
+# GL and Control Discrepancy Type Definitions
+# =============================================================================
+#
+# Purpose:
+#   Defines 5 General Ledger (GL) discrepancy types and 5 Control discrepancy
+#   types for the Discrepancy Injection System. GL discrepancies target journal
+#   entry and posting integrity, while Control discrepancies target internal
+#   control and authorization workflows.
+#
+# Consuming modules:
+#   - app/discrepancies/discrepancy_catalog.py   (DiscrepancyCatalog)
+#   - app/discrepancies/discrepancy_injector.py  (DiscrepancyInjector)
+#   - app/discrepancies/ground_truth_generator.py (GroundTruthGenerator)
+#
+# GL Implementation modules:
+#   - app/discrepancies/gl/unbalanced_journal.py       (GL-001)
+#   - app/discrepancies/gl/journal_no_approval.py      (GL-002)
+#   - app/discrepancies/gl/suspicious_adjusting.py     (GL-003)
+#   - app/discrepancies/gl/unusual_account_combo.py    (GL-004)
+#   - app/discrepancies/gl/manual_override.py          (GL-005)
+#
+# Control Implementation modules:
+#   - app/discrepancies/control/sod_violation.py           (CTL-001)
+#   - app/discrepancies/control/self_approval.py           (CTL-002)
+#   - app/discrepancies/control/approval_limit_exceeded.py (CTL-003)
+#   - app/discrepancies/control/backdated_transaction.py   (CTL-004)
+#   - app/discrepancies/control/holiday_transaction.py     (CTL-005)
+#
+# Specification reference: AAP Section 0.2.2, Section 0.5.1 Group 5 & Group 7
+#
+# Schema per type:
+#   code (str)            — Unique type code (GL-NNN or CTL-NNN)
+#   name (str)            — Human-readable discrepancy name
+#   category (str)        — "gl" or "control"
+#   difficulty (str)      — "easy" or "medium" (no "hard" in MVP — hard: 0.00)
+#   base_rate (float)     — Base injection probability [0.0–1.0]
+#   parameter_bounds (map)— Min/max pairs for each configurable parameter
+#   description (str)     — Detailed explanation of the discrepancy
+#   detection_method (str)— How this discrepancy is typically detected
+#
+# Constraints:
+#   - No "hard" difficulty discrepancies in MVP (hard: 0.00 per AAP Section 0.1.2)
+#   - All parameter_bounds MUST have both min and max values
+#   - CTL-001 SIMULATES SoD violations as discrepancies but does NOT enforce SoD
+#     (out of scope per AAP Section 0.6.2)
+#   - Difficulty distribution: easy (70%), medium (30%) per AAP Section 0.7.5
+#
+# IMPORTANT: Do NOT add hard-difficulty discrepancies for MVP.
+# =============================================================================
+
+# =============================================================================
+# GL Discrepancy Types (5 types)
+# =============================================================================
+# General Ledger discrepancies target journal entry creation, posting integrity,
+# approval workflows, and account classification. These are detected through
+# balance validation, approval audits, timing analysis, pattern analysis, and
+# entry source analysis.
+# =============================================================================
+
+gl_discrepancy_types:
+
+  # ---------------------------------------------------------------------------
+  # GL-001: Unbalanced Journal Entry
+  # ---------------------------------------------------------------------------
+  # Difficulty: EASY
+  # A journal entry where total debits do not equal total credits. This is the
+  # most fundamental GL integrity violation — the accounting equation DR = CR
+  # must always hold within the $0.01 tolerance defined by the GLPostingEngine.
+  # ---------------------------------------------------------------------------
+  - code: "GL-001"
+    name: "Unbalanced Journal Entry"
+    category: "gl"
+    difficulty: "easy"
+    base_rate: 0.10                      # 10% base injection rate within GL category
+    description: "Journal entry where total debits do not equal total credits — violates the fundamental accounting equation DR = CR"
+    detection_method: "balance_validation"
+    parameter_bounds:
+      imbalance_amount:
+        min: 0.02                        # Minimum imbalance of $0.02 (just over $0.01 tolerance)
+        max: 1000.00                     # Maximum imbalance of $1,000
+      imbalance_direction:
+        min: "debit_heavy"               # Total debits exceed total credits
+        max: "credit_heavy"              # Total credits exceed total debits
+
+  # ---------------------------------------------------------------------------
+  # GL-002: Journal Entry Without Approval
+  # ---------------------------------------------------------------------------
+  # Difficulty: EASY
+  # A journal entry posted without required approval per the approval threshold
+  # configuration. Per approval_thresholds.yaml, ALL journal entries require
+  # approval — Senior Accountant for < $50K, Controller for >= $50K.
+  # ---------------------------------------------------------------------------
+  - code: "GL-002"
+    name: "Journal Entry Without Approval"
+    category: "gl"
+    difficulty: "easy"
+    base_rate: 0.08                      # 8% base injection rate within GL category
+    description: "Journal entry posted without required approval per the approval threshold configuration (all JEs require approval)"
+    detection_method: "approval_audit"
+    parameter_bounds:
+      bypass_type:
+        min: "no_approver"               # No approver assigned at all
+        max: "system_override"           # System-level override bypassed approval
+      entry_amount:
+        min: 100                         # Minimum unapproved entry amount ($100)
+        max: 500000                      # Maximum unapproved entry amount ($500,000)
+
+  # ---------------------------------------------------------------------------
+  # GL-003: Suspicious Period-End Adjusting Entry
+  # ---------------------------------------------------------------------------
+  # Difficulty: MEDIUM
+  # An adjusting journal entry posted in the last days of a fiscal period,
+  # potentially manipulating period-end financial results. The PeriodCloseManager
+  # tracks these entries during the 10-step close process.
+  # ---------------------------------------------------------------------------
+  - code: "GL-003"
+    name: "Suspicious Period-End Adjusting Entry"
+    category: "gl"
+    difficulty: "medium"
+    base_rate: 0.06                      # 6% base injection rate within GL category
+    description: "Adjusting journal entry posted in the last days of a fiscal period — potentially manipulating period-end financial results"
+    detection_method: "timing_analysis"
+    parameter_bounds:
+      days_before_close:
+        min: 1                           # Posted 1 day before period close
+        max: 5                           # Posted up to 5 days before period close
+      amount_threshold:
+        min: 5000                        # Minimum suspicious amount ($5,000)
+        max: 100000                      # Maximum suspicious amount ($100,000)
+      reversal_in_next_period:
+        min: false                       # No reversal in next period
+        max: true                        # Reversal follows in the next period
+
+  # ---------------------------------------------------------------------------
+  # GL-004: Unusual Account Combination
+  # ---------------------------------------------------------------------------
+  # Difficulty: MEDIUM
+  # A journal entry that uses a debit/credit account combination which is
+  # historically unusual or not found in the standard posting rules defined in
+  # config/transactions/posting_rules.yaml. May indicate misclassification or
+  # intentional fraud.
+  # ---------------------------------------------------------------------------
+  - code: "GL-004"
+    name: "Unusual Account Combination"
+    category: "gl"
+    difficulty: "medium"
+    base_rate: 0.05                      # 5% base injection rate within GL category
+    description: "Journal entry uses a debit/credit account combination that is historically unusual or not in the standard posting rules — potential misclassification or fraud"
+    detection_method: "pattern_analysis"
+    parameter_bounds:
+      historical_frequency:
+        min: 0.0                         # Combination never seen before (0% frequency)
+        max: 0.05                        # Combination seen in at most 5% of entries
+      account_type_mismatch:
+        min: false                       # Normal account type directions preserved
+        max: true                        # Debiting a revenue account or crediting an expense account
+
+  # ---------------------------------------------------------------------------
+  # GL-005: Manual Entry Overriding System Entry
+  # ---------------------------------------------------------------------------
+  # Difficulty: MEDIUM
+  # A manually created journal entry that reverses or overrides a system-
+  # generated entry. This may indicate unauthorized modification of automated
+  # postings from the P2P, O2C, or period close engines.
+  # ---------------------------------------------------------------------------
+  - code: "GL-005"
+    name: "Manual Entry Overriding System Entry"
+    category: "gl"
+    difficulty: "medium"
+    base_rate: 0.05                      # 5% base injection rate within GL category
+    description: "A manually created journal entry that reverses or overrides a system-generated entry — potential unauthorized modification of automated postings"
+    detection_method: "entry_source_analysis"
+    parameter_bounds:
+      override_amount_pct:
+        min: 0.10                        # Override at least 10% of original entry
+        max: 1.00                        # Override up to 100% of original entry
+      time_after_original_hours:
+        min: 1                           # At least 1 hour after the original system entry
+        max: 72                          # Up to 72 hours (3 days) after the original
+
+# =============================================================================
+# Control Discrepancy Types (5 types)
+# =============================================================================
+# Control discrepancies target internal control and authorization workflows.
+# These include segregation of duties violations, self-approval, authority
+# limit breaches, backdating, and off-hours processing. Detected through
+# user activity analysis, approval audits, date sequence checks, and timing
+# analysis.
+#
+# NOTE: CTL-001 SIMULATES segregation of duties violations as discrepancies
+# but does NOT enforce SoD (out of scope per AAP Section 0.6.2).
+# =============================================================================
+
+control_discrepancy_types:
+
+  # ---------------------------------------------------------------------------
+  # CTL-001: Segregation of Duties Violation
+  # ---------------------------------------------------------------------------
+  # Difficulty: MEDIUM
+  # Same user performs incompatible functions within the same transaction chain.
+  # For example, the same agent both creates a PO and approves the corresponding
+  # payment. This SIMULATES SoD violations — it does NOT enforce SoD controls.
+  # Enforcement of SoD is explicitly out of scope per AAP Section 0.6.2.
+  # ---------------------------------------------------------------------------
+  - code: "CTL-001"
+    name: "Segregation of Duties Violation"
+    category: "control"
+    difficulty: "medium"
+    base_rate: 0.06                      # 6% base injection rate within Control category
+    description: "Same user performs incompatible functions (e.g., both creates PO and approves payment) — SIMULATES SoD violation, does NOT enforce SoD (per AAP Section 0.6.2)"
+    detection_method: "user_activity_analysis"
+    parameter_bounds:
+      violation_type:
+        min: "create_and_approve"        # User creates and approves same transaction
+        max: "receive_and_pay"           # User receives goods and authorizes payment
+      same_transaction:
+        min: true                        # Violation occurs within same transaction chain
+        max: true                        # Always within same transaction chain
+
+  # ---------------------------------------------------------------------------
+  # CTL-002: Same User Created and Approved
+  # ---------------------------------------------------------------------------
+  # Difficulty: EASY
+  # The same agent/user who created a transaction also approved it, violating
+  # the self-approval control. This is a specific subset of CTL-001 but easier
+  # to detect because it only requires matching creator_id == approver_id.
+  # ---------------------------------------------------------------------------
+  - code: "CTL-002"
+    name: "Same User Created and Approved"
+    category: "control"
+    difficulty: "easy"
+    base_rate: 0.08                      # 8% base injection rate within Control category
+    description: "The same agent/user who created a transaction also approved it — self-approval violation"
+    detection_method: "approval_audit"
+    parameter_bounds:
+      transaction_type:
+        min: "purchase_order"            # Self-approval of a purchase order
+        max: "journal_entry"             # Self-approval of a journal entry
+      time_between_actions_hours:
+        min: 0                           # Immediate self-approval (same session)
+        max: 24                          # Self-approval up to 24 hours after creation
+
+  # ---------------------------------------------------------------------------
+  # CTL-003: Approval Limit Exceeded
+  # ---------------------------------------------------------------------------
+  # Difficulty: EASY
+  # Transaction approved by a user whose approval authority limit is less than
+  # the transaction amount. Per approval_thresholds.yaml, each role has a
+  # maximum approval amount (e.g., Purchasing Manager up to $25K, Controller
+  # up to $100K). This discrepancy injects approvals that exceed those limits.
+  # ---------------------------------------------------------------------------
+  - code: "CTL-003"
+    name: "Approval Limit Exceeded"
+    category: "control"
+    difficulty: "easy"
+    base_rate: 0.07                      # 7% base injection rate within Control category
+    description: "Transaction approved by a user whose approval authority limit is less than the transaction amount — exceeded approval threshold"
+    detection_method: "approval_audit"
+    parameter_bounds:
+      excess_pct:
+        min: 0.01                        # 1% over the approver's limit
+        max: 1.00                        # Up to 100% over the approver's limit
+      approver_level:
+        min: 1                           # Level 1 approver (lowest tier)
+        max: 3                           # Level 3 approver (per max_approval_chain_depth: 3)
+
+  # ---------------------------------------------------------------------------
+  # CTL-004: Backdated Transaction
+  # ---------------------------------------------------------------------------
+  # Difficulty: EASY
+  # Transaction created with a date in the past, potentially attempting to
+  # record transactions in a prior fiscal period. The FiscalCalendar tracks
+  # period boundaries (OPEN → CLOSING → CLOSED) and this discrepancy may
+  # cross those boundaries.
+  # ---------------------------------------------------------------------------
+  - code: "CTL-004"
+    name: "Backdated Transaction"
+    category: "control"
+    difficulty: "easy"
+    base_rate: 0.06                      # 6% base injection rate within Control category
+    description: "Transaction created with a date in the past — potential attempt to record transactions in a prior fiscal period"
+    detection_method: "date_sequence"
+    parameter_bounds:
+      days_backdated:
+        min: 1                           # Backdated by at least 1 day
+        max: 90                          # Backdated by up to 90 days (one fiscal quarter)
+      crosses_period_boundary:
+        min: false                       # Backdating stays within current period
+        max: true                        # Backdating crosses a fiscal period boundary
+
+  # ---------------------------------------------------------------------------
+  # CTL-005: Transaction on Holiday/Weekend
+  # ---------------------------------------------------------------------------
+  # Difficulty: EASY
+  # Transaction processed on a US Federal holiday or weekend. The
+  # BusinessCalendar (app/orchestration/business_calendar.py) provides the
+  # US Federal holiday calendar for 2024–2026 and defines working hours as
+  # 08:00–17:00 on business days.
+  # ---------------------------------------------------------------------------
+  - code: "CTL-005"
+    name: "Transaction on Holiday/Weekend"
+    category: "control"
+    difficulty: "easy"
+    base_rate: 0.05                      # 5% base injection rate within Control category
+    description: "Transaction processed on a US Federal holiday or weekend — unusual timing that may indicate unauthorized activity. Uses US Federal holiday calendar (2024-2026) from BusinessCalendar"
+    detection_method: "timing_analysis"
+    parameter_bounds:
+      day_type:
+        min: "weekend"                   # Transaction on Saturday or Sunday
+        max: "federal_holiday"           # Transaction on a US Federal holiday
+      processing_hour:
+        min: 0                           # Midnight (00:00)
+        max: 23                          # 11 PM (23:00)
+
+# =============================================================================
+# Category Summaries
+# =============================================================================
+# Aggregated counts for validation and catalog registration. These summaries
+# are consumed by DiscrepancyCatalog for type count verification.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# GL Category Summary
+# -----------------------------------------------------------------------------
+# GL-001 (easy), GL-002 (easy), GL-003 (medium), GL-004 (medium), GL-005 (medium)
+# -----------------------------------------------------------------------------
+gl_category_summary:
+  total_types: 5                         # Total GL discrepancy types
+  easy_count: 2                          # GL-001, GL-002
+  medium_count: 3                        # GL-003, GL-004, GL-005
+  hard_count: 0                          # No hard types in MVP
+
+# -----------------------------------------------------------------------------
+# Control Category Summary
+# -----------------------------------------------------------------------------
+# CTL-001 (medium), CTL-002 (easy), CTL-003 (easy), CTL-004 (easy), CTL-005 (easy)
+# -----------------------------------------------------------------------------
+control_category_summary:
+  total_types: 5                         # Total Control discrepancy types
+  easy_count: 4                          # CTL-002, CTL-003, CTL-004, CTL-005
+  medium_count: 1                        # CTL-001
+  hard_count: 0                          # No hard types in MVP
+
+# -----------------------------------------------------------------------------
+# Overall File Summary
+# -----------------------------------------------------------------------------
+# Combined counts across both GL and Control categories.
+# Difficulty mix: 6 easy (60%) + 4 medium (40%) = 10 total
+# This file contributes to the global difficulty distribution target of
+# easy (70%) / medium (30%) when combined with P2P and O2C types.
+# -----------------------------------------------------------------------------
+overall_summary:
+  total_types: 10                        # 5 GL + 5 Control
+  easy_count: 6                          # GL-001, GL-002, CTL-002, CTL-003, CTL-004, CTL-005
+  medium_count: 4                        # GL-003, GL-004, GL-005, CTL-001
+  hard_count: 0                          # No hard types in MVP (hard: 0.00)
