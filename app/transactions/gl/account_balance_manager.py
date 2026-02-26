@@ -414,23 +414,34 @@ class AccountBalanceManager:
         """
         account_code = request.account_code
 
-        # --- Account lookup (or auto-register as unknown) ---
+        # --- Account lookup (unregistered accounts are rejected) ---
         account = self._balances.get(account_code)
         if account is None:
-            # Create a default account — callers should register first,
-            # but we tolerate unregistered accounts for flexibility.
-            logger.debug(
-                "auto_registering_unknown_account",
+            # Raise BalanceError for unregistered accounts rather than
+            # silently auto-registering with a default type.  Auto-
+            # registration as "expense" could assign the wrong normal
+            # balance direction for Revenue, Liability, or Equity accounts,
+            # violating financial integrity invariants (AAP §0.7.2).
+            # Callers MUST register accounts via register_account() first.
+            logger.warning(
+                "balance_update_unregistered_account",
                 service_name="transactions",
                 component="AccountBalanceManager",
                 account_code=account_code,
             )
-            account = AccountBalance(
-                account_code=account_code,
-                account_type="expense",
-                normal_balance_side="debit",
+            error_msg = (
+                f"Account '{account_code}' is not registered. "
+                f"Call register_account() before updating balances."
             )
-            self._balances[account_code] = account
+            return BalanceUpdateResult(
+                account_code=account_code,
+                previous_balance=Decimal("0.00"),
+                new_balance=Decimal("0.00"),
+                debit_applied=Decimal("0.00"),
+                credit_applied=Decimal("0.00"),
+                success=False,
+                error_message=error_msg,
+            )
 
         previous_balance = account.current_balance
 
@@ -643,13 +654,24 @@ class AccountBalanceManager:
         """Process a batch of updates under lock with rollback support.
 
         Captures pre-update snapshots so that any failure can trigger a
-        full rollback of all changes made within this batch.
+        full rollback of all changes made within this batch.  Tracks
+        accounts and period entries that existed before the batch so that
+        any newly created entries during the batch can be removed on
+        rollback.
         """
         # --- Snapshot for rollback ---
         snapshot: Dict[str, Tuple[Decimal, Decimal, Decimal, int]] = {}
         period_snapshot: Dict[
             str, Dict[str, Tuple[Decimal, Decimal, Decimal, int]]
         ] = {}
+
+        # Track which account codes existed before the batch, so that
+        # newly added accounts (if any) can be removed on rollback.
+        pre_batch_account_codes: Set[str] = set(self._balances.keys())
+        pre_batch_period_account_codes: Dict[str, Set[str]] = {
+            pid: set(accounts.keys())
+            for pid, accounts in self._period_balances.items()
+        }
 
         for req in requests:
             code = req.account_code
@@ -687,7 +709,13 @@ class AccountBalanceManager:
 
         # --- Rollback on any failure (atomicity) ---
         if failed:
-            self._rollback_batch(snapshot, period_snapshot, results)
+            self._rollback_batch(
+                snapshot,
+                period_snapshot,
+                results,
+                pre_batch_account_codes,
+                pre_batch_period_account_codes,
+            )
             self._batch_rollbacks += 1
             logger.warning(
                 "batch_update_rolled_back",
@@ -717,12 +745,25 @@ class AccountBalanceManager:
             str, Dict[str, Tuple[Decimal, Decimal, Decimal, int]]
         ],
         results: List[BalanceUpdateResult],
+        pre_batch_account_codes: Optional[Set[str]] = None,
+        pre_batch_period_account_codes: Optional[Dict[str, Set[str]]] = None,
     ) -> None:
         """Restore account balances to their pre-batch state.
 
         Reverts the running balance cache and period-specific balances
-        to the values captured before the batch started.  Marks **all**
-        results in the batch as failed.
+        to the values captured before the batch started.  Also removes
+        any accounts or period entries that were newly created during
+        the failed batch (i.e., not present before the batch).  Marks
+        **all** results in the batch as failed.
+
+        Args:
+            snapshot: Pre-batch cumulative balance snapshots.
+            period_snapshot: Pre-batch period balance snapshots.
+            results: Batch results to mark as failed.
+            pre_batch_account_codes: Set of account codes that existed
+                before the batch.  Accounts not in this set are removed.
+            pre_batch_period_account_codes: Mapping of period_id to sets
+                of account codes that existed before the batch.
         """
         # Restore cumulative balances
         for code, (bal, pd, pc, ver) in snapshot.items():
@@ -732,6 +773,18 @@ class AccountBalanceManager:
                 acc.period_debits = pd
                 acc.period_credits = pc
                 acc.version = ver
+
+        # Remove accounts that were newly created during the failed batch
+        if pre_batch_account_codes is not None:
+            new_accounts = set(self._balances.keys()) - pre_batch_account_codes
+            for orphan_code in new_accounts:
+                del self._balances[orphan_code]
+                logger.debug(
+                    "rollback_removed_orphaned_account",
+                    service_name="transactions",
+                    component="AccountBalanceManager",
+                    account_code=orphan_code,
+                )
 
         # Restore period balances
         for pid, accounts in period_snapshot.items():
@@ -743,6 +796,14 @@ class AccountBalanceManager:
                         pacc.period_debits = pd
                         pacc.period_credits = pc
                         pacc.version = ver
+
+        # Remove period-level accounts created during the failed batch
+        if pre_batch_period_account_codes is not None:
+            for pid, period_accounts in self._period_balances.items():
+                pre_batch_codes = pre_batch_period_account_codes.get(pid, set())
+                new_period_accounts = set(period_accounts.keys()) - pre_batch_codes
+                for orphan_code in new_period_accounts:
+                    del period_accounts[orphan_code]
 
         # Mark all results as failed
         for result in results:

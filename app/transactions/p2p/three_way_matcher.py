@@ -544,14 +544,72 @@ class ThreeWayMatcher:
             invoice_quantity = Decimal(str(inv_line.get("quantity", "0")))
             invoice_unit_price = Decimal(str(inv_line.get("unit_price", "0")))
 
+            # Input validation: reject negative quantities and prices (CWE-20).
+            # Negative values would produce incorrect variance calculations
+            # and erroneously flag legitimate matches as exceptions.
+            if invoice_quantity < _ZERO:
+                raise ThreeWayMatchError(
+                    f"Negative invoice quantity ({invoice_quantity}) on "
+                    f"line {line_number}",
+                    details={
+                        "line_number": line_number,
+                        "field": "invoice_quantity",
+                        "value": str(invoice_quantity),
+                    },
+                )
+            if invoice_unit_price < _ZERO:
+                raise ThreeWayMatchError(
+                    f"Negative invoice unit price ({invoice_unit_price}) on "
+                    f"line {line_number}",
+                    details={
+                        "line_number": line_number,
+                        "field": "invoice_unit_price",
+                        "value": str(invoice_unit_price),
+                    },
+                )
+
             # Lookup corresponding PO line.
             po_line = po_index.get(line_number, {})
             po_quantity = Decimal(str(po_line.get("quantity", "0")))
             po_unit_price = Decimal(str(po_line.get("unit_price", "0")))
 
+            # Validate PO line values for non-negative quantities and prices.
+            if po_quantity < _ZERO:
+                raise ThreeWayMatchError(
+                    f"Negative PO quantity ({po_quantity}) on "
+                    f"line {line_number}",
+                    details={
+                        "line_number": line_number,
+                        "field": "po_quantity",
+                        "value": str(po_quantity),
+                    },
+                )
+            if po_unit_price < _ZERO:
+                raise ThreeWayMatchError(
+                    f"Negative PO unit price ({po_unit_price}) on "
+                    f"line {line_number}",
+                    details={
+                        "line_number": line_number,
+                        "field": "po_unit_price",
+                        "value": str(po_unit_price),
+                    },
+                )
+
             # Lookup corresponding receipt line.
             receipt_line = receipt_index.get(line_number, {})
             receipt_quantity = Decimal(str(receipt_line.get("quantity", "0")))
+
+            # Validate receipt quantity for non-negative value.
+            if receipt_quantity < _ZERO:
+                raise ThreeWayMatchError(
+                    f"Negative receipt quantity ({receipt_quantity}) on "
+                    f"line {line_number}",
+                    details={
+                        "line_number": line_number,
+                        "field": "receipt_quantity",
+                        "value": str(receipt_quantity),
+                    },
+                )
 
             # Delegate per-line variance computation.
             line_result = self._match_single_line(

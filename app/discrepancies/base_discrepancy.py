@@ -72,8 +72,9 @@ class BaseDiscrepancy(ABC):
     provides shared infrastructure for parameter validation, structured
     logging, ground truth data creation, and deep-copy transaction handling.
 
-    Six class-level ``ClassVar`` attributes MUST be overridden by every
-    subclass before instantiation:
+    Seven class-level ``ClassVar`` attributes MUST be overridden by every
+    subclass before instantiation, plus a ``PARAMETER_BOUNDS`` dict mapping
+    parameter names to ``(min, max)`` tuples:
 
     Attributes:
         type_code: Unique type code identifying this discrepancy.  Format is
@@ -91,6 +92,15 @@ class BaseDiscrepancy(ABC):
         detection_method: The expected method for detecting this discrepancy,
             e.g. ``"duplicate_check"``, ``"three_way_match"``,
             ``"date_sequence"``.  MUST be set by subclasses.
+        detection_difficulty: The estimated difficulty of detecting this
+            discrepancy, e.g. ``"easy"`` or ``"medium"``.  Typically mirrors
+            ``difficulty`` but may differ for specific detection scenarios.
+            MUST be set by subclasses.
+        PARAMETER_BOUNDS: Dictionary mapping parameter names to bound
+            specifications: ``{"param": {"min": N, "max": M}}``.
+            Used by ``_validate_params()`` as the default bounds when no
+            explicit ``bounds`` argument is provided.  MUST be overridden
+            by subclasses that accept injection parameters.
     """
 
     # ------------------------------------------------------------------
@@ -102,6 +112,14 @@ class BaseDiscrepancy(ABC):
     name: ClassVar[str] = ""
     description: ClassVar[str] = ""
     detection_method: ClassVar[str] = ""
+    detection_difficulty: ClassVar[str] = ""
+
+    # Parameter bounds for this discrepancy type.  Maps parameter names to
+    # ``{"min": <value>, "max": <value>, "default": <optional_value>}``
+    # bound specification dicts.  Subclasses MUST override with their
+    # specific parameter bounds.  The ``_validate_params()`` helper defaults
+    # to this dict when the ``bounds`` argument is ``None``.
+    PARAMETER_BOUNDS: ClassVar[Dict[str, Dict[str, Any]]] = {}
 
     # ------------------------------------------------------------------
     # Constructor
@@ -109,10 +127,14 @@ class BaseDiscrepancy(ABC):
     def __init__(self) -> None:
         """Initialize the base discrepancy and validate required attributes.
 
-        Validates that the concrete subclass has set all six required
+        Validates that the concrete subclass has set all seven required
         class-level attributes (``type_code``, ``category``, ``difficulty``,
-        ``name``, ``description``, ``detection_method``).  Raises
-        :class:`ValueError` if any attribute is missing or invalid.
+        ``name``, ``description``, ``detection_method``,
+        ``detection_difficulty``).  Raises :class:`ValueError` if any
+        attribute is missing or invalid.
+
+        If ``detection_difficulty`` is not explicitly set by the subclass,
+        it defaults to the value of ``difficulty`` for convenience.
 
         Raises:
             ValueError: If ``type_code`` is empty.
@@ -154,6 +176,13 @@ class BaseDiscrepancy(ABC):
             raise ValueError(
                 f"{cls_name} must set 'detection_method' class attribute"
             )
+
+        # Auto-derive detection_difficulty from difficulty if not explicitly
+        # set by the subclass (convenience default).
+        if not self.detection_difficulty:
+            # Set on the instance so that subclasses that don't explicitly
+            # override detection_difficulty still have a valid value.
+            object.__setattr__(self, "detection_difficulty", self.difficulty)
 
         logger.debug(
             "discrepancy_type_initialized",
@@ -227,7 +256,7 @@ class BaseDiscrepancy(ABC):
     def _validate_params(
         self,
         params: Dict[str, Any],
-        bounds: Dict[str, Dict[str, Any]],
+        bounds: Optional[Dict[str, Dict[str, Any]]] = None,
         auto_adjust: bool = True,
     ) -> Dict[str, Any]:
         """Validate injection parameters against configured bounds.
@@ -242,6 +271,11 @@ class BaseDiscrepancy(ABC):
         and the parameter is absent from *params*, the default value is
         applied.
 
+        When ``bounds`` is ``None``, the class-level :attr:`PARAMETER_BOUNDS`
+        dictionary is used as the default bound specification.  This enables
+        subclasses to declare their bounds once as a class attribute and have
+        ``_validate_params`` pick them up automatically.
+
         All numeric comparisons use :class:`Decimal` to ensure financial-
         grade precision per AAP §0.7.2.
 
@@ -252,7 +286,8 @@ class BaseDiscrepancy(ABC):
                 specification is a dictionary with at least ``"min"`` and
                 ``"max"`` keys (numeric or ``Decimal``).  An optional
                 ``"default"`` key provides a fallback when the parameter
-                is absent from *params*.
+                is absent from *params*.  When ``None``, defaults to
+                ``self.PARAMETER_BOUNDS``.
             auto_adjust: When ``True`` (default), silently clamp out-of-
                 bounds values to the nearest bound.  When ``False``, raise
                 ``DiscrepancyInjectionError`` on the first violation.
@@ -266,6 +301,10 @@ class BaseDiscrepancy(ABC):
             DiscrepancyInjectionError: If ``auto_adjust`` is ``False`` and
                 any parameter value lies outside its configured bounds.
         """
+        # Default to class-level PARAMETER_BOUNDS when no explicit bounds given
+        if bounds is None:
+            bounds = self.PARAMETER_BOUNDS
+
         validated: Dict[str, Any] = dict(params)
 
         for param_name, bound_spec in bounds.items():

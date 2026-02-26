@@ -39,6 +39,7 @@ References:
 from __future__ import annotations
 
 import json
+import pathlib
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import (
@@ -582,6 +583,55 @@ class GroundTruthGenerator:
         return record
 
     # ------------------------------------------------------------------
+    # Path Sanitization (CWE-22 mitigation)
+    # ------------------------------------------------------------------
+
+    def _sanitize_output_path(self, filepath: str) -> str:
+        """Resolve and validate an output file path against traversal attacks.
+
+        Ensures the resolved absolute path is within an allowed base
+        directory (either ``self._output_dir`` or the current working
+        directory).  This prevents path traversal via ``../`` segments
+        in user-controlled output paths (CWE-22).
+
+        Args:
+            filepath: The raw file path to validate.
+
+        Returns:
+            The resolved, validated absolute path as a string.
+
+        Raises:
+            ValueError: If the resolved path escapes the allowed base
+                directory.
+        """
+        resolved = pathlib.Path(filepath).resolve()
+
+        # Determine the allowed base directory
+        if self._output_dir:
+            allowed_base = pathlib.Path(self._output_dir).resolve()
+        else:
+            allowed_base = pathlib.Path(".").resolve()
+
+        # Validate the resolved path is within the allowed base
+        try:
+            resolved.relative_to(allowed_base)
+        except ValueError:
+            logger.warning(
+                "path_traversal_blocked",
+                service_name="transactions",
+                component="GroundTruthGenerator",
+                requested_path=filepath,
+                resolved_path=str(resolved),
+                allowed_base=str(allowed_base),
+            )
+            raise ValueError(
+                f"Output path '{filepath}' resolves to '{resolved}' which is "
+                f"outside the allowed base directory '{allowed_base}'"
+            )
+
+        return str(resolved)
+
+    # ------------------------------------------------------------------
     # Output: write_json
     # ------------------------------------------------------------------
 
@@ -619,6 +669,9 @@ class GroundTruthGenerator:
         if filepath is None:
             base_dir = self._output_dir or "."
             filepath = f"{base_dir}/ground_truth_{self._simulation_id}.json"
+
+        # Validate resolved path to prevent path traversal (CWE-22)
+        filepath = self._sanitize_output_path(filepath)
 
         # Serialize all records
         serialized_records = [record.to_dict() for record in self._records]
@@ -673,6 +726,9 @@ class GroundTruthGenerator:
             base_dir = self._output_dir or "."
             filepath = f"{base_dir}/ground_truth_{self._simulation_id}.csv"
 
+        # Validate resolved path to prevent path traversal (CWE-22)
+        filepath = self._sanitize_output_path(filepath)
+
         if not self._records:
             logger.warning(
                 "ground_truth_write_csv_empty",
@@ -695,8 +751,14 @@ class GroundTruthGenerator:
             rows = [record.to_dict() for record in self._records]
             df = pd.DataFrame(rows)
 
-        # Write CSV — synchronous pandas I/O within the async method
-        df.to_csv(filepath, index=False, encoding="utf-8")
+        # Write CSV via asyncio.to_thread to avoid blocking the event loop
+        # during pandas I/O.  This is the async-safe equivalent of the
+        # synchronous df.to_csv() call, aligned with the AAP's requirement
+        # for aiofiles-based async I/O in ground truth output methods.
+        import asyncio
+        await asyncio.to_thread(
+            df.to_csv, filepath, index=False, encoding="utf-8"
+        )
 
         logger.info(
             "ground_truth_csv_written",

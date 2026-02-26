@@ -1,6 +1,6 @@
 """Event type definitions for the Event System (F-007).
 
-Defines 8 event dataclasses used for cross-subsystem coordination through the
+Defines 12 event dataclasses used for cross-subsystem coordination through the
 EventBus. Each event carries a UUID identifier, simulation context, typed payload,
 and optional agent attribution.
 
@@ -12,7 +12,7 @@ Event Schema (per README.md lines 642-648):
     - timestamp: datetime — when the event occurred (UTC)
     - agent_id: Optional[UUID] — which agent generated this event
 
-Event Types (per README.md lines 599-607):
+P2 Event Types (per README.md lines 599-607):
     1. TransactionCreated — new transaction initiated
     2. TransactionCompleted — transaction reached final state
     3. ApprovalRequired — transaction requires higher-authority approval
@@ -21,6 +21,12 @@ Event Types (per README.md lines 599-607):
     6. PeriodClosing — fiscal period closing process started
     7. PeriodClosed — fiscal period fully closed and immutable
     8. DiscrepancyDetected — discrepancy found during processing
+
+P3 Event Types (Project 3 — Transaction Workflows & Discrepancies):
+    9. GLEntryPosted — journal entry posted to General Ledger
+    10. ReworkStarted — rework loop began processing a failed transaction
+    11. ReworkCompleted — rework attempt finished (fixed/failed/escalated)
+    12. BalanceUpdated — GL account balance updated
 """
 
 from __future__ import annotations
@@ -38,12 +44,18 @@ from uuid import UUID, uuid4
 
 
 class EventType(str, Enum):
-    """Type-safe string constants for all 8 event types.
+    """Type-safe string constants for all event types.
 
     Each enum value matches the corresponding event dataclass name, enabling
     reliable dispatch and registry lookup throughout the event system.
+
+    The original 8 P2 event types are retained; the additional P3 event types
+    (GL_ENTRY_POSTED, REWORK_STARTED, REWORK_COMPLETED, BALANCE_UPDATED)
+    extend the enum for Project 3 transaction workflows, discrepancy injection,
+    and rework loop operations.
     """
 
+    # ---- P2 Event Types (original 8) ----
     TRANSACTION_CREATED = "TransactionCreated"
     TRANSACTION_COMPLETED = "TransactionCompleted"
     APPROVAL_REQUIRED = "ApprovalRequired"
@@ -52,6 +64,12 @@ class EventType(str, Enum):
     PERIOD_CLOSING = "PeriodClosing"
     PERIOD_CLOSED = "PeriodClosed"
     DISCREPANCY_DETECTED = "DiscrepancyDetected"
+
+    # ---- P3 Event Types (Project 3 — Transaction Workflows & Discrepancies) ----
+    GL_ENTRY_POSTED = "GLEntryPosted"
+    REWORK_STARTED = "ReworkStarted"
+    REWORK_COMPLETED = "ReworkCompleted"
+    BALANCE_UPDATED = "BalanceUpdated"
 
 
 # ---------------------------------------------------------------------------
@@ -378,10 +396,134 @@ class DiscrepancyDetected(Event):
 
 
 # ---------------------------------------------------------------------------
+# P3 Event Dataclasses — Project 3 Transaction Workflows & Discrepancies
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GLEntryPosted(Event):
+    """Published when a journal entry is successfully posted to the General Ledger.
+
+    Enables downstream subscribers (e.g., metrics, audit trail, balance monitors)
+    to react to GL posting events in real-time via the EventBus.
+
+    Expected payload keys:
+        journal_entry_id (str): Unique identifier for the journal entry.
+        transaction_id (str): Originating transaction identifier.
+        entry_type (str): e.g. "standard", "accrual", "reversing", "recurring".
+        total_debits (str): Total debit amount (Decimal as string).
+        total_credits (str): Total credit amount (Decimal as string).
+        line_count (int): Number of journal entry lines.
+        period_id (str): Fiscal period the entry was posted to.
+        posted_by (str): Agent or system component that posted the entry.
+    """
+
+    event_type: str = field(default=EventType.GL_ENTRY_POSTED.value, init=False)
+
+    @property
+    def journal_entry_id(self) -> Optional[str]:
+        """Convenience accessor for ``payload["journal_entry_id"]``."""
+        return self.payload.get("journal_entry_id")
+
+    @property
+    def entry_type(self) -> Optional[str]:
+        """Convenience accessor for ``payload["entry_type"]``."""
+        return self.payload.get("entry_type")
+
+
+@dataclass
+class ReworkStarted(Event):
+    """Published when the rework loop begins processing a failed transaction.
+
+    Signals that a transaction has entered the classify → fix → re-validate
+    cycle managed by the ReworkLoopEngine.
+
+    Expected payload keys:
+        transaction_id (str): Transaction entering rework.
+        failure_type (str): Classification: "planned_within_bounds",
+            "planned_outside_bounds", or "unplanned_error".
+        attempt_number (int): Current rework attempt (1-based, max 3).
+        failure_reason (str): Description of the validation failure.
+        selected_fix_scenario (str): Fix scenario name selected for this attempt.
+    """
+
+    event_type: str = field(default=EventType.REWORK_STARTED.value, init=False)
+
+    @property
+    def failure_type(self) -> Optional[str]:
+        """Convenience accessor for ``payload["failure_type"]``."""
+        return self.payload.get("failure_type")
+
+    @property
+    def attempt_number(self) -> Optional[int]:
+        """Convenience accessor for ``payload["attempt_number"]``."""
+        return self.payload.get("attempt_number")
+
+
+@dataclass
+class ReworkCompleted(Event):
+    """Published when a rework attempt finishes (success, failure, or escalation).
+
+    Enables metrics tracking of rework success rates and escalation patterns.
+
+    Expected payload keys:
+        transaction_id (str): Transaction that was reworked.
+        outcome (str): "fixed", "failed", or "escalated".
+        attempt_number (int): Which attempt completed.
+        total_attempts (int): Total attempts made for this transaction.
+        fix_scenario_used (str): Name of the fix scenario that was applied.
+        duration_ms (float): Time spent on this rework attempt.
+        escalation_reason (str): Reason for escalation (if outcome is "escalated").
+    """
+
+    event_type: str = field(default=EventType.REWORK_COMPLETED.value, init=False)
+
+    @property
+    def outcome(self) -> Optional[str]:
+        """Convenience accessor for ``payload["outcome"]``."""
+        return self.payload.get("outcome")
+
+    @property
+    def fix_scenario_used(self) -> Optional[str]:
+        """Convenience accessor for ``payload["fix_scenario_used"]``."""
+        return self.payload.get("fix_scenario_used")
+
+
+@dataclass
+class BalanceUpdated(Event):
+    """Published when an account balance is updated in the GL.
+
+    Supports real-time balance monitoring and sub-ledger reconciliation triggers.
+
+    Expected payload keys:
+        account_code (str): GL account code that was updated.
+        previous_balance (str): Balance before update (Decimal as string).
+        new_balance (str): Balance after update (Decimal as string).
+        debit_amount (str): Debit applied (Decimal as string).
+        credit_amount (str): Credit applied (Decimal as string).
+        period_id (str): Fiscal period of the update.
+        journal_entry_id (str): Source journal entry identifier.
+    """
+
+    event_type: str = field(default=EventType.BALANCE_UPDATED.value, init=False)
+
+    @property
+    def account_code(self) -> Optional[str]:
+        """Convenience accessor for ``payload["account_code"]``."""
+        return self.payload.get("account_code")
+
+    @property
+    def new_balance(self) -> Optional[str]:
+        """Convenience accessor for ``payload["new_balance"]``."""
+        return self.payload.get("new_balance")
+
+
+# ---------------------------------------------------------------------------
 # Event Type Registry — maps event_type strings to concrete classes
 # ---------------------------------------------------------------------------
 
 EVENT_TYPE_REGISTRY: Dict[str, Type[Event]] = {
+    # P2 event types (original 8)
     EventType.TRANSACTION_CREATED.value: TransactionCreated,
     EventType.TRANSACTION_COMPLETED.value: TransactionCompleted,
     EventType.APPROVAL_REQUIRED.value: ApprovalRequired,
@@ -390,6 +532,11 @@ EVENT_TYPE_REGISTRY: Dict[str, Type[Event]] = {
     EventType.PERIOD_CLOSING.value: PeriodClosing,
     EventType.PERIOD_CLOSED.value: PeriodClosed,
     EventType.DISCREPANCY_DETECTED.value: DiscrepancyDetected,
+    # P3 event types (Project 3 additions)
+    EventType.GL_ENTRY_POSTED.value: GLEntryPosted,
+    EventType.REWORK_STARTED.value: ReworkStarted,
+    EventType.REWORK_COMPLETED.value: ReworkCompleted,
+    EventType.BALANCE_UPDATED.value: BalanceUpdated,
 }
 
 
@@ -438,6 +585,7 @@ def create_event(event_type: str, **kwargs: Any) -> Event:
 __all__ = [
     "Event",
     "EventType",
+    # P2 event types
     "TransactionCreated",
     "TransactionCompleted",
     "ApprovalRequired",
@@ -446,6 +594,11 @@ __all__ = [
     "PeriodClosing",
     "PeriodClosed",
     "DiscrepancyDetected",
+    # P3 event types (Project 3 — Transaction Workflows & Discrepancies)
+    "GLEntryPosted",
+    "ReworkStarted",
+    "ReworkCompleted",
+    "BalanceUpdated",
     "EVENT_TYPE_REGISTRY",
     "create_event",
 ]

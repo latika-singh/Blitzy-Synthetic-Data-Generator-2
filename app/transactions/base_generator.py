@@ -163,15 +163,36 @@ class GenerationContext(BaseModel):
         default_factory=uuid4,
         description="Distributed trace identifier for log correlation.",
     )
+    batch_id: UUID = Field(
+        default_factory=uuid4,
+        description="Unique identifier for this generation batch, enabling batch-level correlation.",
+    )
     day_number: int = Field(
         default=1,
         ge=1,
         description="Day number within the simulation run.",
     )
+    day_context: Optional[Any] = Field(
+        default=None,
+        description=(
+            "Per-day validated state container carrying P3-specific daily context "
+            "(open POs, pending invoices, unposted GL entries, etc.). "
+            "Populated by SimulationEngine from the DayContext object for "
+            "realistic transaction sequencing."
+        ),
+    )
     batch_size: int = Field(
         default=100,
         ge=1,
         description="Maximum number of transactions per generation batch.",
+    )
+    additional_params: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Extensible parameter dictionary for downstream generators. "
+            "Carries generator-specific configuration not covered by the "
+            "standard fields (e.g., custom approval overrides, entity filters)."
+        ),
     )
 
 
@@ -232,9 +253,21 @@ class TransactionResult(BaseModel):
         ge=0.0,
         description="Processing duration in milliseconds.",
     )
+    errors: List[str] = Field(
+        default_factory=list,
+        description=(
+            "List of error messages when status is 'failed'. Supports multi-error "
+            "reporting for complex validation failures. Single errors are stored as "
+            "a list with one element for uniform handling."
+        ),
+    )
     error_message: Optional[str] = Field(
         default=None,
-        description="Error message when status is 'failed'.",
+        description=(
+            "Primary error message when status is 'failed'. Convenience field "
+            "equivalent to the first element of ``errors``. Retained for "
+            "backward-compatible single-error access patterns."
+        ),
     )
     amount: Optional[Decimal] = Field(
         default=None,
@@ -783,6 +816,7 @@ class TransactionGenerator(ABC):
             return TransactionResult(
                 transaction_type=self.__class__.__name__,
                 status="failed",
+                errors=[exc.message],
                 error_message=exc.message,
                 duration_ms=elapsed_ms,
             )
@@ -802,6 +836,7 @@ class TransactionGenerator(ABC):
             return TransactionResult(
                 transaction_type=self.__class__.__name__,
                 status="failed",
+                errors=[exc.message],
                 error_message=exc.message,
                 duration_ms=elapsed_ms,
             )

@@ -24,6 +24,18 @@ Key design properties:
 - **Wildcard subscribers**: Handlers subscribed to ``"*"`` receive every event.
 - **Async context manager**: ``async with EventBus() as bus: …``
 
+Project 3 Compatibility:
+    No code modifications are required for P3 event support.  The EventBus
+    is type-agnostic — ``publish()`` accepts any :class:`Event` instance and
+    ``subscribe()`` accepts string event type discriminators, :class:`EventType`
+    enum values, or :class:`Event` subclasses.  The 4 new P3 event types
+    (``GLEntryPosted``, ``ReworkStarted``, ``ReworkCompleted``,
+    ``BalanceUpdated``) defined in ``app.events.event_types`` are handled
+    natively by the existing dispatch, subscription, and persistence logic.
+    P3 transaction generators, the GL posting engine, and the rework loop
+    engine consume the EventBus via constructor injection (ADR-003) and
+    publish P3 events through the standard ``publish()`` interface.
+
 References:
     - README.md lines 592–624: EventBus specification
     - AAP §0.4.1: Redis Pub/Sub channel pattern ``events:{event_type}``
