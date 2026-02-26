@@ -11,6 +11,10 @@ domains of the platform:
   and escalation (database errors).
 * **WorkflowErrorHandler** — Handles workflow lifecycle errors with up to 3
   retries via the orchestrator, then failure notification through monitoring.
+* **TransactionErrorHandler** — Handles Project 3 transaction processing errors
+  (P2P/O2C generation, GL posting, three-way matching, discrepancy injection,
+  rework loop, period close, balance updates) with operation-specific retry
+  policies, circuit breaker patterns, and structured fallback behaviors.
 
 All handlers use ``structlog`` for structured JSON logging to stdout — no file
 handlers, no Prometheus / Grafana / APM integration (per AAP Section 0.7.6).
@@ -33,6 +37,7 @@ References:
     - README.md lines 1496–1646 (Error Handling Specification)
     - AAP Section 0.5.1 Group 9 (Cross-cutting Error Handling)
     - AAP Section 0.7.1 (Constructor injection)
+    - AAP Section 0.7.4 (Error Handling Conventions — retry policies, circuit breakers)
     - AAP Section 0.7.6 (structlog logging standard)
 """
 
@@ -41,6 +46,7 @@ from app.errors.error_handlers import (
     DatabaseError,
     LLMError,
     LLMErrorHandler,
+    TransactionErrorHandler,
     WorkflowErrorHandler,
 )
 
@@ -48,4 +54,5 @@ __all__ = [
     "LLMErrorHandler",
     "AgentErrorHandler",
     "WorkflowErrorHandler",
+    "TransactionErrorHandler",
 ]
