@@ -35,7 +35,6 @@ import copy
 import random
 from decimal import Decimal
 from typing import Any, ClassVar, Dict, List, Tuple
-from uuid import uuid4
 
 import structlog
 
@@ -179,7 +178,7 @@ class RoundTripping(BaseDiscrepancy):
             # The corresponding_purchase_id represents the buy-back leg of
             # the round-trip that would appear in the P2P pipeline.
             # ---------------------------------------------------------------
-            corresponding_purchase_id: str = str(uuid4())
+            corresponding_purchase_id: str = f"RT-{rng.randint(100000, 999999):06d}"
 
             # ---------------------------------------------------------------
             # Step 5: Mark the transaction as a round-trip

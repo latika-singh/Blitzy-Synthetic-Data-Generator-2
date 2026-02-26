@@ -7,8 +7,8 @@ concentration beyond normal statistical patterns, which may indicate kickback
 arrangements, conflicts of interest, or vendor favoritism.
 
 Configurable Parameters:
-    concentration_threshold (Decimal): The spend concentration ratio to simulate.
-        Bounds: 0.3–0.9 (30%–90% of total spend to one vendor).
+    concentration_pct (Decimal): The spend concentration ratio to simulate.
+        Bounds: 0.3–0.80 (30%–80% of total spend to one vendor).
         Default: 0.6 (60%).
         Normal healthy threshold is ~0.3 for top vendor.
 
@@ -73,7 +73,7 @@ class VendorConcentration(BaseDiscrepancy):
     - **Vendor favoritism** — preferential treatment without competitive
       bidding.
 
-    The ``concentration_threshold`` parameter controls the simulated
+    The ``concentration_pct`` parameter controls the simulated
     concentration ratio (default 60%).  Normal healthy top-vendor
     concentration is approximately 30%.
 
@@ -84,8 +84,8 @@ class VendorConcentration(BaseDiscrepancy):
         name: ``"Unusual Vendor Concentration"``
         description: Human-readable summary of this discrepancy type.
         detection_method: ``"statistical_analysis"``
-        PARAMETER_BOUNDS: Validation bounds for ``concentration_threshold``
-            (min 0.3, max 0.9, default 0.6).
+        PARAMETER_BOUNDS: Validation bounds for ``concentration_pct``
+            (min 0.3, max 0.80, default 0.6).
     """
 
     # ------------------------------------------------------------------
@@ -104,9 +104,9 @@ class VendorConcentration(BaseDiscrepancy):
     # Parameter bounds — consumed by _validate_params()
     # ------------------------------------------------------------------
     PARAMETER_BOUNDS: ClassVar[Dict[str, Dict[str, Any]]] = {
-        "concentration_threshold": {
+        "concentration_pct": {
             "min": Decimal("0.3"),
-            "max": Decimal("0.9"),
+            "max": Decimal("0.80"),
             "type": "Decimal",
             "default": Decimal("0.6"),
         },
@@ -131,7 +131,7 @@ class VendorConcentration(BaseDiscrepancy):
         Algorithm:
 
         1. Deep-copy the transaction to preserve the original.
-        2. Validate and extract the ``concentration_threshold`` parameter.
+        2. Validate and extract the ``concentration_pct`` parameter.
         3. Retrieve the vendor identifier and original total amount.
         4. Compute an inflation factor using ``rng.uniform(0.2, 0.5)`` to
            deterministically inflate the transaction amount, simulating
@@ -146,7 +146,7 @@ class VendorConcentration(BaseDiscrepancy):
                 keys include ``vendor_id`` (or ``vendor``), ``total_amount``
                 (or ``amount``), and ``transaction_id`` (or ``id``).
             params: Injection parameters.  Recognised key:
-                ``concentration_threshold`` (Decimal in [0.3, 0.9]).
+                ``concentration_pct`` (Decimal in [0.3, 0.80]).
             rng: Seeded :class:`random.Random` instance for deterministic
                 behaviour.  **CRITICAL**: Only this instance may be used
                 for random operations — never the module-level RNG.
@@ -168,8 +168,8 @@ class VendorConcentration(BaseDiscrepancy):
             # Step 2: Validate parameters and extract threshold          #
             # ---------------------------------------------------------- #
             validated_params = self._validate_params(params)
-            concentration_threshold = Decimal(
-                str(validated_params.get("concentration_threshold", Decimal("0.6")))
+            concentration_pct = Decimal(
+                str(validated_params.get("concentration_pct", Decimal("0.6")))
             )
 
             # ---------------------------------------------------------- #
@@ -225,7 +225,7 @@ class VendorConcentration(BaseDiscrepancy):
             # ---------------------------------------------------------- #
             modified["total_amount"] = inflated_amount
             modified["vendor_concentration_flag"] = True
-            modified["vendor_concentration_ratio"] = str(concentration_threshold)
+            modified["vendor_concentration_ratio"] = str(concentration_pct)
             modified["vendor_concentration_category"] = "high_concentration"
             modified["vendor_concentration_normal_threshold"] = str(
                 _NORMAL_CONCENTRATION_THRESHOLD
@@ -239,7 +239,7 @@ class VendorConcentration(BaseDiscrepancy):
             # what a normal concentration would produce.  We use the
             # threshold delta multiplied by the original amount as a
             # proxy, plus the absolute inflation difference.
-            excess_concentration = concentration_threshold - _NORMAL_CONCENTRATION_THRESHOLD
+            excess_concentration = concentration_pct - _NORMAL_CONCENTRATION_THRESHOLD
             # Ensure non-negative excess (threshold is always >= 0.3 per bounds)
             if excess_concentration < Decimal("0"):
                 excess_concentration = Decimal("0")
@@ -268,8 +268,8 @@ class VendorConcentration(BaseDiscrepancy):
             # ---------------------------------------------------------- #
             # Step 9: Build ground truth record                          #
             # ---------------------------------------------------------- #
-            concentration_pct = (
-                concentration_threshold * Decimal("100")
+            concentration_display_pct = (
+                concentration_pct * Decimal("100")
             ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
 
             ground_truth = self._create_ground_truth_data(
@@ -286,15 +286,15 @@ class VendorConcentration(BaseDiscrepancy):
                 modified_values={
                     "total_amount": str(inflated_amount),
                     "vendor_concentration_flag": True,
-                    "vendor_concentration_ratio": str(concentration_threshold),
+                    "vendor_concentration_ratio": str(concentration_pct),
                 },
                 financial_impact=financial_impact,
                 description=(
-                    f"Vendor {vendor_id} shows {concentration_pct}% spend "
+                    f"Vendor {vendor_id} shows {concentration_display_pct}% spend "
                     f"concentration (threshold: 30%)"
                 ),
                 extra_metadata={
-                    "concentration_threshold": str(concentration_threshold),
+                    "concentration_pct": str(concentration_pct),
                     "normal_threshold": str(_NORMAL_CONCENTRATION_THRESHOLD),
                     "vendor_id": str(vendor_id),
                     "inflation_factor": str(inflation_factor),

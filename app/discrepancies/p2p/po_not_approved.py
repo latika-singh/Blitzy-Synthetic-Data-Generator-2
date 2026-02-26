@@ -102,7 +102,7 @@ class PONotApproved(BaseDiscrepancy):
     # ------------------------------------------------------------------
     type_code: ClassVar[str] = "P2P-005"
     category: ClassVar[str] = "p2p"
-    difficulty: ClassVar[str] = "easy"
+    difficulty: ClassVar[str] = "medium"
     name: ClassVar[str] = "PO Not Approved"
     description: ClassVar[str] = (
         "Purchase order bypassed or received insufficient approval"

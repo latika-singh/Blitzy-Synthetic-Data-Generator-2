@@ -32,10 +32,9 @@ from __future__ import annotations
 
 import copy
 import random
-from datetime import datetime, timezone
-from decimal import Decimal
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
-from uuid import uuid4
 
 import structlog
 
@@ -157,6 +156,24 @@ class ManualOverride(BaseDiscrepancy):
     detection_method: ClassVar[str] = "system_log_review"
 
     # ------------------------------------------------------------------
+    # Parameter bounds — from YAML gl_discrepancies.yaml GL-005
+    # ------------------------------------------------------------------
+    PARAMETER_BOUNDS: ClassVar[Dict[str, Dict[str, Any]]] = {
+        "override_amount_pct": {
+            "min": 0.10,
+            "max": 1.00,
+            "type": "float",
+            "default": 0.50,
+        },
+        "time_after_original_hours": {
+            "min": 1,
+            "max": 72,
+            "type": "int",
+            "default": 4,
+        },
+    }
+
+    # ------------------------------------------------------------------
     # inject() — Core discrepancy injection method
     # ------------------------------------------------------------------
     def inject(
@@ -195,6 +212,11 @@ class ManualOverride(BaseDiscrepancy):
         try:
             # 1. Deep copy to preserve original transaction data
             modified: Dict[str, Any] = self._copy_transaction(transaction)
+
+            # 1b. Validate parameters against PARAMETER_BOUNDS
+            validated_params: Dict[str, Any] = self._validate_params(
+                params, self.PARAMETER_BOUNDS
+            )
 
             # 2. Tracking dictionaries for ground truth
             affected_fields: List[str] = []
@@ -266,8 +288,33 @@ class ManualOverride(BaseDiscrepancy):
             modified_values["original_source"] = original_system_source
             affected_fields.append("original_source")
 
-            # 7. Add an override timestamp
-            override_timestamp: str = datetime.now(timezone.utc).isoformat()
+            # 7. Add an override timestamp — derived deterministically from
+            # transaction date fields and the time_after_original_hours param
+            # (NEVER use datetime.now() per AAP §0.7.1 deterministic reproducibility)
+            time_after_hours: int = validated_params.get(
+                "time_after_original_hours", rng.randint(1, 72)
+            )
+            base_dt: Optional[datetime] = None
+            for dt_field in ("posting_date", "entry_date", "transaction_date", "created_date"):
+                raw_dt = modified.get(dt_field)
+                if raw_dt is not None:
+                    if isinstance(raw_dt, datetime):
+                        base_dt = raw_dt
+                    elif isinstance(raw_dt, str):
+                        try:
+                            base_dt = datetime.fromisoformat(raw_dt)
+                        except (ValueError, TypeError):
+                            pass
+                    if base_dt is not None:
+                        break
+            if base_dt is None:
+                # Fallback: construct a deterministic datetime from the
+                # transaction's year or a reasonable default
+                base_dt = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+            if base_dt.tzinfo is None:
+                base_dt = base_dt.replace(tzinfo=timezone.utc)
+            override_dt = base_dt + timedelta(hours=time_after_hours)
+            override_timestamp: str = override_dt.isoformat()
             original_values["override_timestamp"] = modified.get(
                 "override_timestamp", "NOT_PRESENT"
             )

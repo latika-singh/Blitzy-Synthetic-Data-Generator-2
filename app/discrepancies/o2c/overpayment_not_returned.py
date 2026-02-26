@@ -18,8 +18,8 @@ Difficulty: ``medium`` — requires cross-referencing payment allocations with
 unapplied cash records.
 
 Parameter Bounds:
-    overpay_percent: int, range [1, 30] — percentage overpayment above
-        the invoice amount.
+    overpay_pct: float, range [0.01, 0.20] — fractional overpayment above
+        the invoice amount (e.g. 0.10 = 10%).
 
 References:
     - AAP Section 0.1.2: Overpayment handling rule
@@ -68,7 +68,7 @@ class OverpaymentNotReturned(BaseDiscrepancy):
         - Invoice balance is set to exactly $0.00 (NEVER negative)
 
     This discrepancy injects the *failure* of that control:
-        - Payment is inflated by ``overpay_percent`` above the invoice amount
+        - Payment is inflated by ``overpay_pct`` above the invoice amount
         - ``unapplied_cash_created`` is set to ``False``
         - ``unapplied_cash_amount`` is set to ``Decimal("0.00")``
         - ``overpayment_returned`` is set to ``False``
@@ -84,7 +84,7 @@ class OverpaymentNotReturned(BaseDiscrepancy):
         name: ``"Overpayment Not Returned"``
         description: Human-readable summary of the discrepancy.
         detection_method: ``"payment_matching"``
-        PARAMETER_BOUNDS: ``{"overpay_percent": {"min": 1, "max": 30, "type": "int"}}``
+        PARAMETER_BOUNDS: ``{"overpay_pct": {"min": 0.01, "max": 0.20, "type": "float"}}``
     """
 
     # ------------------------------------------------------------------
@@ -104,7 +104,7 @@ class OverpaymentNotReturned(BaseDiscrepancy):
     # Parameter Bounds — validated by _validate_params()
     # ------------------------------------------------------------------
     PARAMETER_BOUNDS: ClassVar[Dict[str, Dict[str, Any]]] = {
-        "overpay_percent": {"min": 1, "max": 30, "type": "int"},
+        "overpay_pct": {"min": 0.01, "max": 0.20, "type": "float"},
     }
 
     # ------------------------------------------------------------------
@@ -119,14 +119,14 @@ class OverpaymentNotReturned(BaseDiscrepancy):
         """Inject an overpayment-not-returned discrepancy into the transaction.
 
         Inflates the payment amount above the invoice amount by
-        ``overpay_percent``, then suppresses the Unapplied Cash record that
-        should normally be created.
+        ``overpay_pct`` (fractional), then suppresses the Unapplied Cash
+        record that should normally be created.
 
         Steps:
             1. Deep-copy the transaction to preserve the original.
             2. Validate parameters against ``PARAMETER_BOUNDS``.
-            3. Determine ``overpay_percent`` (from params or generated via
-               ``rng.randint(1, 30)``).
+            3. Determine ``overpay_pct`` (from params or generated via
+               ``rng.uniform(0.01, 0.20)``).
             4. Extract ``invoice_amount`` from transaction data.
             5. Compute the overpayment amount using ``Decimal`` with
                ``ROUND_HALF_UP`` rounding to 2 decimal places.
@@ -144,7 +144,7 @@ class OverpaymentNotReturned(BaseDiscrepancy):
                 ``Decimal``).  Should also contain ``"transaction_id"``
                 for logging.
             params: Injection parameters.  Recognised key:
-                ``"overpay_percent"`` (int, range [1, 30]).  If absent,
+                ``"overpay_pct"`` (float, range [0.01, 0.20]).  If absent,
                 a random value within bounds is generated using *rng*.
             rng: Seeded :class:`random.Random` instance for deterministic
                 reproducibility.  **NEVER** use module-level ``random``.
@@ -175,10 +175,10 @@ class OverpaymentNotReturned(BaseDiscrepancy):
             )
 
             # ----------------------------------------------------------
-            # 3. Determine overpay_percent
+            # 3. Determine overpay_pct (fractional, e.g. 0.10 = 10%)
             # ----------------------------------------------------------
-            overpay_percent: int = validated_params.get(
-                "overpay_percent", rng.randint(1, 30)
+            overpay_pct: float = validated_params.get(
+                "overpay_pct", rng.uniform(0.01, 0.20)
             )
 
             # ----------------------------------------------------------
@@ -217,8 +217,7 @@ class OverpaymentNotReturned(BaseDiscrepancy):
             # ----------------------------------------------------------
             overpayment = (
                 invoice_amount
-                * Decimal(str(overpay_percent))
-                / Decimal("100")
+                * Decimal(str(overpay_pct))
             ).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
 
             # ----------------------------------------------------------
@@ -275,7 +274,7 @@ class OverpaymentNotReturned(BaseDiscrepancy):
             financial_impact = overpayment
 
             description = (
-                f"Overpayment of {overpay_percent}% (${overpayment}) not "
+                f"Overpayment of {overpay_pct * 100:.1f}% (${overpayment}) not "
                 f"returned or recorded as Unapplied Cash"
             )
 
@@ -286,7 +285,7 @@ class OverpaymentNotReturned(BaseDiscrepancy):
                 financial_impact=financial_impact,
                 description=description,
                 extra_metadata={
-                    "overpay_percent": overpay_percent,
+                    "overpay_pct": overpay_pct,
                     "invoice_amount": str(invoice_amount),
                     "payment_amount": str(payment_amount),
                     "overpayment_amount": str(overpayment),

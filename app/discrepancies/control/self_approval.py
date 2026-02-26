@@ -158,6 +158,10 @@ class SelfApproval(BaseDiscrepancy):
         # 1. Deep copy — preserve the original transaction unmodified.
         modified: Dict[str, Any] = self._copy_transaction(transaction)
 
+        # 1b. Validate parameters (no-op for CTL-002 — no numeric params,
+        # but called for pattern consistency per review feedback)
+        self._validate_params(params, self.PARAMETER_BOUNDS)
+
         # 2. Identify eligible (creator_field, approver_field) pairs where
         #    BOTH keys already exist in the transaction dictionary.
         eligible_pairs: List[Tuple[str, str]] = [

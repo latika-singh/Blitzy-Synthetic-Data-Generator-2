@@ -340,7 +340,7 @@ class DiscrepancyCatalog:
             type_code="P2P-005",
             name="PO Not Approved",
             category="p2p",
-            difficulty="easy",
+            difficulty="medium",
             base_rate=default_rate,
             description=(
                 "Purchase order was processed without required approval or with "
@@ -378,7 +378,7 @@ class DiscrepancyCatalog:
             type_code="P2P-007",
             name="Round-Dollar Invoice",
             category="p2p",
-            difficulty="medium",
+            difficulty="easy",
             base_rate=default_rate,
             description=(
                 "Invoice total is a suspiciously round dollar amount (e.g. "
@@ -417,7 +417,7 @@ class DiscrepancyCatalog:
             type_code="P2P-009",
             name="Duplicate Payment",
             category="p2p",
-            difficulty="easy",
+            difficulty="medium",
             base_rate=default_rate,
             description=(
                 "Same vendor paid the same amount within a short period, "
@@ -578,7 +578,7 @@ class DiscrepancyCatalog:
             ),
             detection_method="duplicate_check",
             parameter_bounds={
-                "days_apart": {"min": 1, "max": 90, "type": "int"},
+                "days_apart": {"min": 1, "max": 60, "type": "int"},
             },
             implementation_class=(
                 "app.discrepancies.o2c.duplicate_customer_invoice.DuplicateCustomerInvoice"
@@ -881,7 +881,7 @@ class DiscrepancyCatalog:
             type_code="CTL-001",
             name="Segregation of Duties Violation",
             category="control",
-            difficulty="easy",
+            difficulty="medium",
             base_rate=default_rate,
             description=(
                 "A single user performed multiple incompatible functions in "
@@ -938,7 +938,7 @@ class DiscrepancyCatalog:
             type_code="CTL-004",
             name="Backdated Transaction",
             category="control",
-            difficulty="medium",
+            difficulty="easy",
             base_rate=default_rate,
             description=(
                 "Transaction date is set to a past date, potentially to "

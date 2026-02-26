@@ -112,7 +112,7 @@ class BackdatedTransaction(BaseDiscrepancy):
     # ------------------------------------------------------------------
     type_code: ClassVar[str] = "CTL-004"
     category: ClassVar[str] = "control"
-    difficulty: ClassVar[str] = "medium"
+    difficulty: ClassVar[str] = "easy"
     name: ClassVar[str] = "Backdated Transaction"
     description: ClassVar[str] = (
         "Transaction date set significantly in the past relative to "

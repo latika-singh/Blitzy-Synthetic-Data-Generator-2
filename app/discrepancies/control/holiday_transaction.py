@@ -218,6 +218,10 @@ class HolidayTransaction(BaseDiscrepancy):
         # 1. Deep-copy transaction to preserve the original
         modified = self._copy_transaction(transaction)
 
+        # 1b. Validate parameters (no-op for CTL-005 — no numeric params,
+        # but called for pattern consistency per review feedback)
+        self._validate_params(params, self.PARAMETER_BOUNDS)
+
         # 2. Find the first available date field
         date_field: Optional[str] = None
         raw_value: Any = None
@@ -301,10 +305,10 @@ class HolidayTransaction(BaseDiscrepancy):
             },
         )
 
-        # 9. Log the injection event
+        # 9. Log the injection event (use modified copy for consistency)
         transaction_id = str(
-            transaction.get("transaction_id")
-            or transaction.get("id")
+            modified.get("transaction_id")
+            or modified.get("id")
             or "unknown"
         )
         self._log_injection(

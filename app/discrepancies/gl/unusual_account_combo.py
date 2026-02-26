@@ -452,11 +452,11 @@ class UnusualAccountCombo(BaseDiscrepancy):
             },
         )
 
-        # 10. Log the injection event
+        # 10. Log the injection event (use modified copy for consistency)
         transaction_id = str(
-            transaction.get(
+            modified.get(
                 "transaction_id",
-                transaction.get("je_id", transaction.get("id", "unknown")),
+                modified.get("je_id", modified.get("id", "unknown")),
             )
         )
         self._log_injection(

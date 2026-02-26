@@ -99,7 +99,7 @@ class ShortPayment(BaseDiscrepancy):
     # Parameter bounds for discrepancy injection validation
     # ------------------------------------------------------------------
     PARAMETER_BOUNDS: ClassVar[Dict[str, Dict[str, Any]]] = {
-        "short_percent": {"min": 1, "max": 20, "type": "int"},
+        "short_pct": {"min": 0.01, "max": 0.25, "type": "float"},
     }
 
     # ------------------------------------------------------------------
@@ -156,10 +156,12 @@ class ShortPayment(BaseDiscrepancy):
             params, self.PARAMETER_BOUNDS
         )
 
-        # ── Step 3: Determine short_percent ──────────────────────────
-        # Use the provided value or generate a default via the seeded RNG
-        short_percent: int = validated_params.get(
-            "short_percent", rng.randint(1, 20)
+        # ── Step 3: Determine short_pct (fractional 0.01–0.25) ────────
+        # Use the provided value or generate a default via the seeded RNG.
+        # Parameter aligned to YAML o2c_discrepancies.yaml O2C-004 semantics:
+        # fractional value where 0.01 = 1%, 0.25 = 25%.
+        short_pct: float = validated_params.get(
+            "short_pct", rng.uniform(0.01, 0.25)
         )
 
         # ── Step 4: Extract invoice amount ───────────────────────────
@@ -212,10 +214,10 @@ class ShortPayment(BaseDiscrepancy):
             )
 
         # ── Step 5: Calculate shortfall ──────────────────────────────
-        # shortfall = invoice_amount * short_percent / 100, rounded to
+        # shortfall = invoice_amount * short_pct, rounded to
         # 2 decimal places using ROUND_HALF_UP per AAP §0.7.2.
         shortfall: Decimal = (
-            invoice_amount * Decimal(short_percent) / Decimal("100")
+            invoice_amount * Decimal(str(short_pct))
         ).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
 
         # Ensure shortfall is at least $0.01 so the discrepancy is visible
@@ -264,11 +266,11 @@ class ShortPayment(BaseDiscrepancy):
             },
             financial_impact=financial_impact,
             description=(
-                f"Short payment of {short_percent}% "
+                f"Short payment of {short_pct:.0%} "
                 f"\u2014 underpayment of ${shortfall}"
             ),
             extra_metadata={
-                "short_percent": short_percent,
+                "short_pct": short_pct,
                 "invoice_amount": str(invoice_amount),
                 "dispute_documented": False,
                 "allocation_method": "FIFO",

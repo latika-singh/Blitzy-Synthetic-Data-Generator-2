@@ -18,7 +18,7 @@ Difficulty: ``medium`` — requires temporal pattern analysis and historical
 volume comparison.
 
 Parameter Bounds:
-    volume_multiplier: float, range [1.5, 5.0] — multiplier applied to the
+    volume_multiplier: float, range [2.0, 5.0] — multiplier applied to the
         normal order quantity to simulate stuffed volume.
 
 References:
@@ -62,7 +62,7 @@ class ChannelStuffing(BaseDiscrepancy):
     Simulates shipping excessively large quantities of product to customers
     near period-end to artificially inflate current-period revenue.  The
     ``inject()`` method inflates line-item quantities by a configurable
-    ``volume_multiplier`` (default randomly chosen within [1.5, 5.0]),
+    ``volume_multiplier`` (default randomly chosen within [2.0, 5.0]),
     recalculates line-level and order-level totals using :class:`Decimal`
     arithmetic, and sets period-end indicator flags.
 
@@ -76,7 +76,7 @@ class ChannelStuffing(BaseDiscrepancy):
         name: ``"Channel Stuffing"``
         description: Human-readable description of the discrepancy.
         detection_method: ``"pattern_analysis"``
-        PARAMETER_BOUNDS: ``{"volume_multiplier": {"min": 1.5, "max": 5.0, "type": "float"}}``
+        PARAMETER_BOUNDS: ``{"volume_multiplier": {"min": 2.0, "max": 5.0, "type": "float"}}``
     """
 
     # ------------------------------------------------------------------
@@ -96,7 +96,7 @@ class ChannelStuffing(BaseDiscrepancy):
     # Parameter bounds (AAP §0.7.5 — auto-adjust to bounds if enabled)
     # ------------------------------------------------------------------
     PARAMETER_BOUNDS: ClassVar[Dict[str, Dict[str, Any]]] = {
-        "volume_multiplier": {"min": 1.5, "max": 5.0, "type": "float"},
+        "volume_multiplier": {"min": 2.0, "max": 5.0, "type": "float"},
     }
 
     # ------------------------------------------------------------------
@@ -125,7 +125,7 @@ class ChannelStuffing(BaseDiscrepancy):
 
                 - ``"volume_multiplier"`` (float) — multiplier for
                   line quantities.  If absent, a random value in
-                  [1.5, 5.0] is generated via *rng*.
+                  [2.0, 5.0] is generated via *rng*.
 
             rng: Seeded :class:`random.Random` instance for deterministic
                 reproducibility.  CRITICAL: MUST use this RNG for all
@@ -156,7 +156,7 @@ class ChannelStuffing(BaseDiscrepancy):
             # ----------------------------------------------------------
             raw_multiplier: float = validated_params.get(
                 "volume_multiplier",
-                rng.uniform(1.5, 5.0),
+                rng.uniform(2.0, 5.0),
             )
             # Convert to Decimal for all financial calculations
             multiplier: Decimal = Decimal(str(raw_multiplier))

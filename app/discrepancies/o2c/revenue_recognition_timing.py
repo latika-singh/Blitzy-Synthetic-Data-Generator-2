@@ -17,7 +17,7 @@ and GL posting dates against fiscal period boundaries.
 Difficulty: ``medium`` — requires period boundary analysis and date comparison.
 
 Parameter Bounds:
-    days_early: int, range [1, 60] — number of days revenue is recognized
+    days_premature: int, range [1, 30] — number of days revenue is recognized
         before the actual delivery/shipment date.
 
 References:
@@ -63,9 +63,9 @@ class RevenueRecognitionTiming(BaseDiscrepancy):
     :meth:`inject` method to:
 
     1. Deep-copy the transaction to preserve the original.
-    2. Validate the ``days_early`` parameter against configured bounds.
+    2. Validate the ``days_premature`` parameter against configured bounds.
     3. Shift the ``revenue_recognition_date`` (or ``gl_posting_date``)
-       earlier by ``days_early`` days using :class:`datetime.timedelta`.
+       earlier by ``days_premature`` days using :class:`datetime.timedelta`.
     4. Set ``period_override`` to ``True`` to indicate manual period
        manipulation.
     5. Derive fiscal period identifiers for both original and manipulated
@@ -79,7 +79,7 @@ class RevenueRecognitionTiming(BaseDiscrepancy):
         name: ``"Revenue Recognition Timing Error"``
         description: Human-readable description of the discrepancy.
         detection_method: ``"period_analysis"``
-        PARAMETER_BOUNDS: ``{"days_early": {"min": 1, "max": 60, "type": "int"}}``
+        PARAMETER_BOUNDS: ``{"days_premature": {"min": 1, "max": 30, "type": "int"}}``
 
     Example::
 
@@ -87,7 +87,7 @@ class RevenueRecognitionTiming(BaseDiscrepancy):
         rng = random.Random(42)
         modified, ground_truth = injector.inject(
             transaction={"invoice_id": "INV-2024-0001", ...},
-            params={"days_early": 15},
+            params={"days_premature": 15},
             rng=rng,
         )
     """
@@ -106,10 +106,10 @@ class RevenueRecognitionTiming(BaseDiscrepancy):
     detection_method: ClassVar[str] = "period_analysis"
 
     # ------------------------------------------------------------------
-    # Parameter bounds — days_early: [1, 60] (integer)
+    # Parameter bounds — days_premature: [1, 30] (integer)
     # ------------------------------------------------------------------
     PARAMETER_BOUNDS: ClassVar[Dict[str, Dict[str, Any]]] = {
-        "days_early": {"min": 1, "max": 60, "type": "int"},
+        "days_premature": {"min": 1, "max": 30, "type": "int"},
     }
 
     # ------------------------------------------------------------------
@@ -123,7 +123,7 @@ class RevenueRecognitionTiming(BaseDiscrepancy):
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Inject a revenue recognition timing discrepancy.
 
-        Shifts the revenue recognition date earlier by ``days_early`` days,
+        Shifts the revenue recognition date earlier by ``days_premature`` days,
         potentially moving revenue into an earlier fiscal period.  The entire
         invoice/revenue amount is treated as the financial impact because
         the full revenue amount is recognized in the wrong period.
@@ -132,12 +132,12 @@ class RevenueRecognitionTiming(BaseDiscrepancy):
             1. Deep-copy the transaction via :meth:`_copy_transaction`.
             2. Validate ``params`` against :attr:`PARAMETER_BOUNDS` via
                :meth:`_validate_params`.
-            3. Extract ``days_early`` — if not provided, generate a random
-               value in ``[1, 60]`` using the seeded ``rng``.
+            3. Extract ``days_premature`` — if not provided, generate a random
+               value in ``[1, 30]`` using the seeded ``rng``.
             4. Locate the original recognition date from the transaction,
                checking ``revenue_recognition_date``, ``gl_posting_date``,
                ``invoice_date``, and ``posting_date`` in priority order.
-            5. Compute ``new_date = original_date - timedelta(days=days_early)``.
+            5. Compute ``new_date = original_date - timedelta(days=days_premature)``.
             6. Update the transaction with the shifted date and set
                ``period_override`` to ``True``.
             7. Determine the financial impact as the full invoice/revenue
@@ -159,10 +159,10 @@ class RevenueRecognitionTiming(BaseDiscrepancy):
 
             params: Injection parameters.  Recognised keys:
 
-                - ``"days_early"`` (int): Number of days to shift the
+                - ``"days_premature"`` (int): Number of days to shift the
                   recognition date earlier.  Validated against
-                  ``PARAMETER_BOUNDS`` (1–60).  If absent, a random
-                  value in ``[1, 60]`` is generated via ``rng``.
+                  ``PARAMETER_BOUNDS`` (1–30).  If absent, a random
+                  value in ``[1, 30]`` is generated via ``rng``.
 
             rng: A seeded :class:`random.Random` instance for deterministic
                 behaviour.  CRITICAL: MUST use this RNG exclusively — NEVER
@@ -193,9 +193,9 @@ class RevenueRecognitionTiming(BaseDiscrepancy):
                 params, self.PARAMETER_BOUNDS
             )
 
-            # ----- Step 3: Extract days_early -----
-            days_early: int = int(
-                validated_params.get("days_early", rng.randint(1, 60))
+            # ----- Step 3: Extract days_premature -----
+            days_premature: int = int(
+                validated_params.get("days_premature", rng.randint(1, 30))
             )
 
             # ----- Step 4: Locate original recognition date -----
@@ -220,7 +220,7 @@ class RevenueRecognitionTiming(BaseDiscrepancy):
             date_key: str = _resolve_date_key(transaction)
 
             # ----- Step 5: Shift recognition date earlier -----
-            new_date = original_date - timedelta(days=days_early)
+            new_date = original_date - timedelta(days=days_premature)
 
             # ----- Step 6: Modify transaction -----
             # Set the shifted recognition date using the same key found
@@ -293,11 +293,11 @@ class RevenueRecognitionTiming(BaseDiscrepancy):
                 },
                 financial_impact=financial_impact,
                 description=(
-                    f"Revenue recognized {days_early} days before delivery "
+                    f"Revenue recognized {days_premature} days before delivery "
                     f"\u2014 period manipulation"
                 ),
                 extra_metadata={
-                    "days_early": days_early,
+                    "days_premature": days_premature,
                     "original_period": original_period,
                     "manipulated_period": manipulated_period,
                     "date_key_used": date_key,
@@ -323,7 +323,7 @@ class RevenueRecognitionTiming(BaseDiscrepancy):
                 component="RevenueRecognitionTiming",
                 type_code=self.type_code,
                 transaction_id=transaction_id,
-                days_early=days_early,
+                days_premature=days_premature,
                 original_date=str(original_date),
                 new_date=str(new_date),
                 original_period=original_period,

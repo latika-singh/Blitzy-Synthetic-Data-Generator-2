@@ -80,7 +80,7 @@ class RoundDollarInvoice(BaseDiscrepancy):
     # ------------------------------------------------------------------
     type_code: ClassVar[str] = "P2P-007"
     category: ClassVar[str] = "p2p"
-    difficulty: ClassVar[str] = "medium"
+    difficulty: ClassVar[str] = "easy"
     name: ClassVar[str] = "Round-Dollar Invoice"
     description: ClassVar[str] = (
         "Invoice with suspiciously round dollar amount (fraud indicator)"

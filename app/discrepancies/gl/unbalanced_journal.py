@@ -52,21 +52,6 @@ logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Parameter Bounds (AAP Section 0.5.1 Group 5, AAP Section 0.7.5)
-# ---------------------------------------------------------------------------
-
-# imbalance_amount minimum is 0.02 to exceed the $0.01 tolerance threshold
-# that the GLPostingEngine uses for its balance check.
-PARAMETER_BOUNDS: Dict[str, Dict[str, Any]] = {
-    "imbalance_amount": {
-        "min": Decimal("0.02"),
-        "max": Decimal("1000.00"),
-        "type": "Decimal",
-    },
-}
-
-
-# ---------------------------------------------------------------------------
 # Journal Entry Field Name Constants
 # ---------------------------------------------------------------------------
 
@@ -143,6 +128,16 @@ class UnbalancedJournal(BaseDiscrepancy):
     )
     detection_method: ClassVar[str] = "balance_check"
 
+    # Parameter bounds — moved from module-level to ClassVar per
+    # BaseDiscrepancy pattern (imbalance_amount: $0.02 – $1,000)
+    PARAMETER_BOUNDS: ClassVar[Dict[str, Dict[str, Any]]] = {
+        "imbalance_amount": {
+            "min": Decimal("0.02"),
+            "max": Decimal("1000.00"),
+            "type": "Decimal",
+        },
+    }
+
     # ------------------------------------------------------------------
     # inject() — Core discrepancy injection method
     # ------------------------------------------------------------------
@@ -189,7 +184,7 @@ class UnbalancedJournal(BaseDiscrepancy):
 
         # Step 2: Validate and normalise params against PARAMETER_BOUNDS
         validated_params: Dict[str, Any] = self._validate_params(
-            params, PARAMETER_BOUNDS
+            params, self.PARAMETER_BOUNDS
         )
 
         # Step 3: Extract or generate imbalance_amount

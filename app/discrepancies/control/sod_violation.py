@@ -175,7 +175,7 @@ class SoDViolation(BaseDiscrepancy):
     # ------------------------------------------------------------------
     type_code: ClassVar[str] = "CTL-001"
     category: ClassVar[str] = "control"
-    difficulty: ClassVar[str] = "easy"
+    difficulty: ClassVar[str] = "medium"
     name: ClassVar[str] = "Segregation of Duties Violation"
     description: ClassVar[str] = (
         "Same user assigned to incompatible roles within a transaction "
@@ -236,6 +236,10 @@ class SoDViolation(BaseDiscrepancy):
         """
         # 1. Deep copy — never mutate the original transaction
         modified: Dict[str, Any] = self._copy_transaction(transaction)
+
+        # 1b. Validate parameters (no-op for CTL-001 — no numeric params,
+        # but called for pattern consistency per review feedback)
+        self._validate_params(params, self.PARAMETER_BOUNDS)
 
         # 2. Attempt to find an eligible conflict pair from SOD_CONFLICT_PAIRS
         eligible_pairs: List[Tuple[str, str, str, str]] = []

@@ -89,16 +89,6 @@ ROLE_AUTHORITY_LIMITS: Dict[str, Dict[str, Decimal]] = {
 
 
 # ---------------------------------------------------------------------------
-# Parameter Bounds (from discrepancy catalog)
-# ---------------------------------------------------------------------------
-# excess_percent controls how much the amount exceeds the approver's authority
-# limit, expressed as a percentage: new_amount = limit * (1 + excess_percent/100).
-PARAMETER_BOUNDS: Dict[str, Dict[str, Any]] = {
-    "excess_percent": {"min": 1, "max": 100, "type": "int"},
-}
-
-
-# ---------------------------------------------------------------------------
 # ApprovalLimitExceeded — CTL-003 discrepancy implementation
 # ---------------------------------------------------------------------------
 
@@ -153,6 +143,12 @@ class ApprovalLimitExceeded(BaseDiscrepancy):
     )
     detection_method: ClassVar[str] = "approval_check"
 
+    # Parameter bounds — excess_percent controls how much the amount
+    # exceeds the approver's authority limit.
+    PARAMETER_BOUNDS: ClassVar[Dict[str, Dict[str, Any]]] = {
+        "excess_percent": {"min": 1, "max": 100, "type": "int"},
+    }
+
     # ------------------------------------------------------------------
     # inject() — Core discrepancy injection method
     # ------------------------------------------------------------------
@@ -195,7 +191,7 @@ class ApprovalLimitExceeded(BaseDiscrepancy):
 
         # ---- 2. Validate and extract excess_percent parameter ----
         validated_params: Dict[str, Any] = self._validate_params(
-            params, PARAMETER_BOUNDS
+            params, self.PARAMETER_BOUNDS
         )
         excess_percent: int = validated_params.get("excess_percent")  # type: ignore[assignment]
         if excess_percent is None:

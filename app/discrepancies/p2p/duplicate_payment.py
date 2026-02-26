@@ -7,7 +7,7 @@ accidental (system/process failure) or intentional (fraud).
 
 Configurable Parameters:
     days_apart (int): Days between original and duplicate payments.
-        Bounds: 1–90 days. Default: 7 days.
+        Bounds: 1–60 days. Default: 7 days.
 
 Detection Method: duplicate_check
     Detected by matching payments to the same vendor with the same amount
@@ -90,7 +90,7 @@ class DuplicatePayment(BaseDiscrepancy):
         name: ``"Duplicate Payment"``
         description: Short human-readable description.
         detection_method: ``"duplicate_check"``
-        PARAMETER_BOUNDS: Bounds for ``days_apart`` (1–90, default 7).
+        PARAMETER_BOUNDS: Bounds for ``days_apart`` (1–60, default 7).
     """
 
     # ------------------------------------------------------------------
@@ -98,7 +98,7 @@ class DuplicatePayment(BaseDiscrepancy):
     # ------------------------------------------------------------------
     type_code: ClassVar[str] = "P2P-009"
     category: ClassVar[str] = "p2p"
-    difficulty: ClassVar[str] = "easy"
+    difficulty: ClassVar[str] = "medium"
     name: ClassVar[str] = "Duplicate Payment"
     description: ClassVar[str] = (
         "Same payment to same vendor/amount within a short period"
@@ -111,7 +111,7 @@ class DuplicatePayment(BaseDiscrepancy):
     PARAMETER_BOUNDS: ClassVar[Dict[str, Dict[str, Any]]] = {
         "days_apart": {
             "min": 1,
-            "max": 90,
+            "max": 60,
             "type": "int",
             "default": 7,
         },
@@ -155,7 +155,7 @@ class DuplicatePayment(BaseDiscrepancy):
             params: Injection parameters.  Recognised keys:
 
                 - ``days_apart`` (int): Days between original and duplicate.
-                  Bounds: 1–90.  Default: 7.
+                  Bounds: 1–60.  Default: 7.
 
             rng: Seeded :class:`random.Random` instance for deterministic
                 behaviour.  Used for payment number suffix selection.

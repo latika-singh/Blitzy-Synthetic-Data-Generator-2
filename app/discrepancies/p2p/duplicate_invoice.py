@@ -11,9 +11,10 @@ Configurable Parameters:
     amount_variance_pct (Decimal): Percentage variation in invoice amount.
         Bounds: 0–5%. Default: 0% (exact duplicate).
         When > 0, creates a "near-duplicate" with slightly different amount.
-    number_variation (bool): Whether to slightly alter the invoice number.
-        Default: False (exact same number = obvious duplicate).
-        When True, appends suffix like "-A" or changes last digit.
+    number_variation (int): Degree of invoice number variation (0–3).
+        Default: 0 (exact same number = obvious duplicate).
+        Higher values apply more character-level mutations (suffix, swap,
+        prefix) for progressively harder-to-detect near-duplicates.
 
 Detection Method: duplicate_check
     Detectable via invoice number comparison, vendor+amount+date proximity
@@ -53,7 +54,7 @@ logger = structlog.get_logger(__name__)
 __all__ = ["DuplicateInvoice"]
 
 # ---------------------------------------------------------------------------
-# Invoice number variation suffixes used when ``number_variation`` is True.
+# Invoice number variation suffixes used when ``number_variation`` > 0.
 # Selected deterministically via the seeded ``rng`` parameter.
 # ---------------------------------------------------------------------------
 _NUMBER_SUFFIXES: Tuple[str, ...] = ("-A", "-DUP", "-R", "-2", "-COPY")
@@ -97,10 +98,9 @@ class DuplicateInvoice(BaseDiscrepancy):
     # Parameter bounds for validation
     # ------------------------------------------------------------------
     # ``days_apart`` and ``amount_variance_pct`` are validated numerically
-    # by ``_validate_params()``.  ``number_variation`` is a boolean flag;
-    # min/max of 0/1 satisfy the Decimal-comparison in the base class
-    # (bool → str → Decimal conversion fails gracefully, so numeric
-    # comparison is skipped while the default is still applied).
+    # by ``_validate_params()``.  ``number_variation`` is an integer (0–3)
+    # representing the degree of invoice number mutation applied.  A value
+    # of 0 means no variation (exact duplicate number).
     # ------------------------------------------------------------------
     PARAMETER_BOUNDS: ClassVar[Dict[str, Dict[str, Any]]] = {
         "days_apart": {
@@ -117,9 +117,9 @@ class DuplicateInvoice(BaseDiscrepancy):
         },
         "number_variation": {
             "min": 0,
-            "max": 1,
-            "type": "bool",
-            "default": False,
+            "max": 3,
+            "type": "int",
+            "default": 0,
         },
     }
 
@@ -146,7 +146,7 @@ class DuplicateInvoice(BaseDiscrepancy):
                 key is used for logging; if absent a placeholder is used.
             params: Injection parameters — ``"days_apart"`` (int),
                 ``"amount_variance_pct"`` (Decimal), and
-                ``"number_variation"`` (bool).  Missing keys receive
+                ``"number_variation"`` (int, 0–3).  Missing keys receive
                 default values from :attr:`PARAMETER_BOUNDS`.
             rng: A seeded :class:`random.Random` instance for
                 deterministic behaviour.  **NEVER** use module-level
@@ -180,8 +180,8 @@ class DuplicateInvoice(BaseDiscrepancy):
             amount_variance_pct: Decimal = Decimal(
                 str(validated.get("amount_variance_pct", Decimal("0")))
             )
-            number_variation: bool = bool(
-                validated.get("number_variation", False)
+            number_variation: int = int(
+                validated.get("number_variation", 0)
             )
 
             # 4. Validate that all required fields are present
@@ -223,11 +223,11 @@ class DuplicateInvoice(BaseDiscrepancy):
 
                 modified["total_amount"] = modified_total_amount
 
-            # 6c. Invoice number variation
+            # 6c. Invoice number variation (graduated: 0=none, 1-3=degree)
             modified_invoice_number: str = original_invoice_number
-            if number_variation:
+            if number_variation > 0:
                 modified_invoice_number = self._vary_invoice_number(
-                    original_invoice_number, rng
+                    original_invoice_number, rng, degree=number_variation
                 )
                 modified["invoice_number"] = modified_invoice_number
 
@@ -243,7 +243,7 @@ class DuplicateInvoice(BaseDiscrepancy):
                     "near"
                     if (
                         amount_variance_pct > Decimal("0")
-                        or number_variation
+                        or number_variation > 0
                     )
                     else "exact"
                 )
@@ -276,7 +276,7 @@ class DuplicateInvoice(BaseDiscrepancy):
                 original_values["total_amount"] = str(original_total_amount)
                 modified_values["total_amount"] = str(modified_total_amount)
 
-            if number_variation:
+            if number_variation > 0:
                 affected_fields.append("invoice_number")
                 original_values["invoice_number"] = original_invoice_number
                 modified_values["invoice_number"] = modified_invoice_number
@@ -286,7 +286,7 @@ class DuplicateInvoice(BaseDiscrepancy):
             # ----------------------------------------------------------
             duplicate_type: str = (
                 "near"
-                if (amount_variance_pct > Decimal("0") or number_variation)
+                if (amount_variance_pct > Decimal("0") or number_variation > 0)
                 else "exact"
             )
 
@@ -390,12 +390,21 @@ class DuplicateInvoice(BaseDiscrepancy):
 
     @staticmethod
     def _vary_invoice_number(
-        original_number: str, rng: random.Random
+        original_number: str, rng: random.Random, *, degree: int = 1
     ) -> str:
-        """Create a slightly varied invoice number for a near-duplicate.
+        """Create a varied invoice number for a near-duplicate.
 
-        Applies one of three mutation strategies (selected deterministically
-        via *rng*):
+        Applies graduated mutation based on *degree* (number of characters
+        that differ from the original):
+
+        - **degree 1** — Single mutation: one of suffix append, last-char
+          swap, or prefix alteration.
+        - **degree 2** — Two mutations applied sequentially.
+        - **degree 3** — Three mutations applied sequentially.
+
+        Each mutation step is selected deterministically via *rng*.
+
+        Available single-mutation strategies:
 
         1. **Suffix** — appends a suffix from ``_NUMBER_SUFFIXES``
            (e.g., ``"INV-1234"`` → ``"INV-1234-A"``).
@@ -407,34 +416,58 @@ class DuplicateInvoice(BaseDiscrepancy):
         Args:
             original_number: The original invoice number string.
             rng: Seeded :class:`random.Random` instance.
+            degree: Number of character-level mutations to apply (1–3).
+                Clamped to ``[1, 3]`` internally.
 
         Returns:
             A modified invoice number string.
+        """
+        degree = max(1, min(degree, 3))
+        result: str = original_number
+
+        for _ in range(degree):
+            result = DuplicateInvoice._apply_single_mutation(result, rng)
+
+        return result
+
+    @staticmethod
+    def _apply_single_mutation(number: str, rng: random.Random) -> str:
+        """Apply a single mutation to an invoice number string.
+
+        Selects one of three strategies deterministically via *rng*:
+        suffix append, last-character swap, or prefix alteration.
+
+        Args:
+            number: Current invoice number string.
+            rng: Seeded :class:`random.Random` instance.
+
+        Returns:
+            The mutated invoice number string.
         """
         strategy: int = rng.randint(0, 2)
 
         if strategy == 0:
             # Strategy 1: Append a suffix
             suffix: str = rng.choice(_NUMBER_SUFFIXES)
-            return f"{original_number}{suffix}"
+            return f"{number}{suffix}"
 
         elif strategy == 1:
             # Strategy 2: Swap last character
-            if not original_number:
-                return original_number + rng.choice(_NUMBER_SUFFIXES)
+            if not number:
+                return number + rng.choice(_NUMBER_SUFFIXES)
 
-            last_char: str = original_number[-1]
+            last_char: str = number[-1]
             if last_char.isdigit():
                 # Pick a different digit
                 new_digit: str = str((int(last_char) + rng.randint(1, 9)) % 10)
-                return original_number[:-1] + new_digit
+                return number[:-1] + new_digit
             else:
                 # Pick a different letter
                 replacement: str = rng.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
                 while replacement == last_char.upper():
                     replacement = rng.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-                return original_number[:-1] + replacement
+                return number[:-1] + replacement
 
         else:
             # Strategy 3: Prepend "DUP-"
-            return f"DUP-{original_number}"
+            return f"DUP-{number}"
