@@ -1347,6 +1347,118 @@ class DiscrepancyInjector:
             )
 
     # ------------------------------------------------------------------
+    # Batch Convenience — SimulationEngine Integration
+    # ------------------------------------------------------------------
+
+    async def process_batch(
+        self,
+        *,
+        day_context: Any = None,
+    ) -> Dict[str, Any]:
+        """Process a batch of transactions from the day context for discrepancy injection.
+
+        This is a convenience wrapper invoked by :class:`SimulationEngine`
+        during its daily pipeline (Step 3a).  It iterates over P3 daily
+        state lists in the ``DayContext`` (e.g. ``open_purchase_orders``,
+        ``pending_vendor_invoices``, ``open_sales_orders``,
+        ``pending_customer_invoices``) and calls :meth:`check_and_inject`
+        for each transaction candidate.
+
+        When *day_context* is ``None`` or contains no transaction candidates,
+        the method returns immediately with zero counts.
+
+        Args:
+            day_context: A :class:`~app.simulation.day_context.DayContext`
+                instance (or any object with transaction list attributes and
+                a ``simulation_id`` attribute).
+
+        Returns:
+            Dictionary with keys ``discrepancies_injected`` (int),
+            ``ground_truths_created`` (int), ``transactions_checked`` (int),
+            and ``errors`` (int).
+        """
+        discrepancies_injected = 0
+        ground_truths_created = 0
+        transactions_checked = 0
+        errors = 0
+
+        if day_context is None:
+            return {
+                "discrepancies_injected": 0,
+                "ground_truths_created": 0,
+                "transactions_checked": 0,
+                "errors": 0,
+            }
+
+        # Extract simulation context for check_and_inject calls
+        sim_id = getattr(day_context, "simulation_id", "unknown")
+        sim_date = getattr(day_context, "simulation_date", None)
+        context: Dict[str, Any] = {
+            "simulation_id": str(sim_id),
+            "trace_id": str(uuid4()),
+            "current_date": str(sim_date) if sim_date else "",
+        }
+
+        # Deterministic RNG seeded from the simulation state
+        day_number = getattr(day_context, "day_number", 0)
+        seed_val = hash((str(sim_id), day_number, "discrepancy_batch"))
+        rng = random.Random(seed_val)
+
+        # Transaction list attribute names → transaction_type mapping
+        _candidate_lists: List[Tuple[str, str]] = [
+            ("open_purchase_orders", "purchase_order"),
+            ("pending_vendor_invoices", "vendor_invoice"),
+            ("open_sales_orders", "sales_order"),
+            ("pending_customer_invoices", "customer_invoice"),
+        ]
+
+        for attr_name, txn_type in _candidate_lists:
+            candidates = getattr(day_context, attr_name, None) or []
+            for txn in candidates:
+                txn_data: Dict[str, Any] = (
+                    txn if isinstance(txn, dict) else {"data": txn}
+                )
+                try:
+                    result = await self.check_and_inject(
+                        transaction=txn_data,
+                        transaction_type=txn_type,
+                        context=context,
+                        rng=rng,
+                    )
+                    transactions_checked += 1
+                    if result.injected:
+                        discrepancies_injected += 1
+                        if result.ground_truth_id is not None:
+                            ground_truths_created += 1
+                except Exception as exc:
+                    errors += 1
+                    logger.warning(
+                        "discrepancy_batch_item_error",
+                        service_name="transactions",
+                        component="DiscrepancyInjector",
+                        transaction_type=txn_type,
+                        error=str(exc),
+                    )
+
+        logger.info(
+            "discrepancy_batch_processed",
+            service_name="transactions",
+            component="DiscrepancyInjector",
+            transactions_checked=transactions_checked,
+            discrepancies_injected=discrepancies_injected,
+            ground_truths_created=ground_truths_created,
+            errors=errors,
+            simulation_id=str(sim_id),
+        )
+
+        return {
+            "discrepancies_injected": discrepancies_injected,
+            "ground_truths_created": ground_truths_created,
+            "transactions_checked": transactions_checked,
+            "errors": errors,
+        }
+
+    # ------------------------------------------------------------------
     # Public: Metrics
     # ------------------------------------------------------------------
 

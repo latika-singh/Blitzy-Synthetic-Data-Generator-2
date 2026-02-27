@@ -1114,6 +1114,136 @@ class ReworkLoopEngine:
         return failure_rate > self._escalation_threshold
 
     # ------------------------------------------------------------------ #
+    # Batch Convenience — SimulationEngine Integration
+    # ------------------------------------------------------------------ #
+
+    async def process_day(
+        self,
+        *,
+        day_context: Any = None,
+    ) -> Dict[str, Any]:
+        """Process all completed transactions from the day for rework validation.
+
+        This is a convenience wrapper invoked by :class:`SimulationEngine`
+        during its daily pipeline (Step 4.5).  It iterates over
+        ``DayContext.active_rework_items`` and calls
+        :meth:`process_validation_failure` for each transaction that has
+        validation errors.
+
+        When *day_context* is ``None`` or has no active rework items, the
+        method returns immediately with zero counts.
+
+        Args:
+            day_context: A :class:`~app.simulation.day_context.DayContext`
+                instance (or any object with an ``active_rework_items``
+                attribute and ``simulation_id`` / ``simulation_date``
+                attributes).
+
+        Returns:
+            Dictionary with keys ``attempts`` (int), ``successes`` (int),
+            ``escalations`` (int), and ``failures`` (int).
+        """
+        attempts = 0
+        successes = 0
+        escalations = 0
+        failures = 0
+
+        if day_context is None:
+            return {
+                "attempts": 0,
+                "successes": 0,
+                "escalations": 0,
+                "failures": 0,
+            }
+
+        # Extract rework candidates from the day context
+        rework_items: List[Any] = (
+            getattr(day_context, "active_rework_items", None) or []
+        )
+
+        if not rework_items:
+            logger.debug(
+                "rework_process_day_noop",
+                service_name="transactions",
+                component="ReworkLoopEngine",
+                reason="no_active_rework_items",
+            )
+            return {
+                "attempts": 0,
+                "successes": 0,
+                "escalations": 0,
+                "failures": 0,
+            }
+
+        # Build context dictionary from day_context attributes
+        sim_id = getattr(day_context, "simulation_id", "unknown")
+        sim_date = getattr(day_context, "simulation_date", None)
+        context: Dict[str, Any] = {
+            "simulation_id": str(sim_id),
+            "trace_id": str(uuid4()),
+            "current_date": str(sim_date) if sim_date else "",
+        }
+
+        for item in rework_items:
+            # Each rework item should be a dict with 'transaction' and 'errors'
+            if isinstance(item, dict):
+                transaction = item.get("transaction", item)
+                validation_errors = item.get("validation_errors", item.get("errors", []))
+            else:
+                # Treat the item itself as the transaction
+                transaction = (
+                    item if isinstance(item, dict) else {"data": item}
+                )
+                validation_errors = []
+
+            if not isinstance(validation_errors, list):
+                validation_errors = [{"type": "unknown", "message": str(validation_errors)}]
+
+            try:
+                result = await self.process_validation_failure(
+                    transaction=transaction,
+                    validation_errors=validation_errors,
+                    context=context,
+                )
+                attempts += len(result.attempts)
+                if result.resolved:
+                    successes += 1
+                elif result.escalated:
+                    escalations += 1
+                else:
+                    failures += 1
+            except Exception as exc:
+                failures += 1
+                logger.warning(
+                    "rework_day_item_error",
+                    service_name="transactions",
+                    component="ReworkLoopEngine",
+                    error=str(exc),
+                )
+
+        # Clear processed rework items from day context
+        if hasattr(day_context, "active_rework_items"):
+            day_context.active_rework_items = []
+
+        logger.info(
+            "rework_process_day_completed",
+            service_name="transactions",
+            component="ReworkLoopEngine",
+            attempts=attempts,
+            successes=successes,
+            escalations=escalations,
+            failures=failures,
+            simulation_id=str(sim_id),
+        )
+
+        return {
+            "attempts": attempts,
+            "successes": successes,
+            "escalations": escalations,
+            "failures": failures,
+        }
+
+    # ------------------------------------------------------------------ #
     # Metrics — get_metrics
     # ------------------------------------------------------------------ #
 

@@ -1590,3 +1590,89 @@ class GLPostingEngine:
             ``cumulative_debits - cumulative_credits`` (Decimal).
         """
         return self._calculate_raw_trial_balance()
+
+    # ------------------------------------------------------------------
+    # Batch Convenience — SimulationEngine Integration
+    # ------------------------------------------------------------------
+
+    async def post_pending_entries(
+        self,
+        *,
+        day_context: Any = None,
+    ) -> Dict[str, Any]:
+        """Post pending GL journal entries from the day context.
+
+        This is a convenience wrapper invoked by :class:`SimulationEngine`
+        during its daily pipeline (Step 2c).  It extracts any unposted GL
+        journal entries accumulated in the ``DayContext.unposted_gl_entries``
+        list, posts them via :meth:`post_entries_batch`, and returns a
+        summary dictionary suitable for metrics collection.
+
+        When *day_context* is ``None`` or has no pending entries, the method
+        returns immediately with ``entries_posted = 0``.
+
+        Args:
+            day_context: A :class:`~app.simulation.day_context.DayContext`
+                instance (or any object with an ``unposted_gl_entries``
+                attribute and an optional ``simulation_id`` attribute).
+
+        Returns:
+            Dictionary with keys ``entries_posted`` (int),
+            ``entries_failed`` (int), and ``trial_balance_after`` (str).
+        """
+        entries_to_post: List[JournalEntry] = []
+        simulation_id: Optional[UUID] = None
+
+        if day_context is not None:
+            raw_entries = getattr(day_context, "unposted_gl_entries", []) or []
+            for raw in raw_entries:
+                if isinstance(raw, JournalEntry):
+                    entries_to_post.append(raw)
+                elif isinstance(raw, dict):
+                    try:
+                        entries_to_post.append(JournalEntry(**raw))
+                    except Exception:
+                        logger.warning(
+                            "gl_pending_entry_parse_failed",
+                            service_name="transactions",
+                            component="GLPostingEngine",
+                            entry_data=str(raw)[:200],
+                        )
+            raw_sim_id = getattr(day_context, "simulation_id", None)
+            if isinstance(raw_sim_id, UUID):
+                simulation_id = raw_sim_id
+            elif isinstance(raw_sim_id, str):
+                try:
+                    simulation_id = UUID(raw_sim_id)
+                except ValueError:
+                    simulation_id = None
+
+        if not entries_to_post:
+            logger.debug(
+                "gl_post_pending_noop",
+                service_name="transactions",
+                component="GLPostingEngine",
+                reason="no_pending_entries",
+            )
+            return {
+                "entries_posted": 0,
+                "entries_failed": 0,
+                "trial_balance_after": str(self._calculate_raw_trial_balance()),
+            }
+
+        results = await self.post_entries_batch(
+            entries_to_post, simulation_id=simulation_id
+        )
+
+        posted_count = sum(1 for r in results if r.success)
+        failed_count = len(results) - posted_count
+
+        # Clear posted entries from day context to prevent re-processing
+        if day_context is not None and hasattr(day_context, "unposted_gl_entries"):
+            day_context.unposted_gl_entries = []
+
+        return {
+            "entries_posted": posted_count,
+            "entries_failed": failed_count,
+            "trial_balance_after": str(self._calculate_raw_trial_balance()),
+        }

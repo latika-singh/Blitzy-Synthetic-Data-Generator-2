@@ -327,6 +327,68 @@ class PeriodCloseManager:
     # Main Public API — Period Close Orchestration
     # ------------------------------------------------------------------
 
+    async def execute_period_close(
+        self,
+        day_context: Any = None,
+        **kwargs: Any,
+    ) -> "PeriodCloseResult":
+        """High-level wrapper invoked by :class:`SimulationEngine`.
+
+        Extracts ``period_id``, ``fiscal_period``, and
+        ``simulation_id`` from the supplied *day_context* and delegates
+        to :meth:`close_period` which performs the actual 10-step
+        close process.
+
+        This method exists so the composition root can call a single
+        method with just a ``DayContext`` instead of unpacking
+        individual parameters.
+
+        Args:
+            day_context: A :class:`DayContext` (or compatible object)
+                carrying ``fiscal_period``, ``simulation_id``, and
+                ``simulation_date`` attributes.
+            **kwargs: Forwarded to :meth:`close_period`.
+
+        Returns:
+            :class:`PeriodCloseResult` from the underlying close.
+        """
+        from datetime import date as _date_type
+
+        period_id = "UNKNOWN"
+        fiscal_period_data: Optional[Dict[str, Any]] = None
+        sim_uuid: Optional[UUID] = None
+
+        if day_context is not None:
+            # Extract fiscal period info
+            fiscal_info = getattr(day_context, "fiscal_period", None)
+            sim_date = getattr(day_context, "simulation_date", None) or _date_type.today()
+
+            if fiscal_info is not None:
+                fy = getattr(fiscal_info, "fiscal_year", 0) or 0
+                fm = getattr(fiscal_info, "fiscal_month", 0) or 0
+                period_id = f"FY{fy}-P{fm:02d}" if fy and fm else f"PERIOD-{sim_date.isoformat()}"
+                fiscal_period_data = {
+                    "fiscal_year": fy,
+                    "period_number": fm,
+                    "start_date": sim_date.replace(day=1),
+                    "end_date": sim_date,
+                }
+
+            # Extract simulation_id
+            raw_sim_id = getattr(day_context, "simulation_id", None)
+            if raw_sim_id:
+                try:
+                    sim_uuid = UUID(str(raw_sim_id))
+                except (ValueError, TypeError):
+                    sim_uuid = None
+
+        return await self.close_period(
+            period_id=period_id,
+            fiscal_period=fiscal_period_data,
+            simulation_id=sim_uuid,
+            **kwargs,
+        )
+
     async def close_period(
         self,
         period_id: str,
@@ -742,15 +804,32 @@ class PeriodCloseManager:
         result: PeriodCloseResult,
         simulation_id: Optional[UUID] = None,
     ) -> None:
-        """Generate deferral entries for prepaid items.
+        """Generate deferral entries for prepaid expenses and unearned revenue.
 
-        Deferrals reverse prepaid expense or deferred revenue entries
-        that should be recognised in the current period.  Each deferral
-        is posted via the GL posting engine with full balance validation.
+        Creates actual GL journal entries via the ``GLPostingEngine`` for each
+        account that requires deferral recognition in the current period:
 
-        When the GLPostingEngine is not injected, logs a warning and
-        skips the step.
+        * **Prepaid expenses** (accounts starting with ``"1300"``):
+          DR Expense account (6000), CR Prepaid account — recognises the
+          portion of prepaid expense consumed in this period.
+
+        * **Deferred/unearned revenue** (accounts starting with ``"2300"``):
+          DR Deferred Revenue account, CR Revenue account (4000) — recognises
+          the portion of deferred revenue earned in this period.
+
+        The deferral amount for each account is calculated using the
+        straight-line daily method: ``balance / days_in_period``, consistent
+        with the accrual methodology specified in AAP §0.1.2.
+
+        When the GLPostingEngine is not injected, logs a warning and skips.
+        When the AccountBalanceManager is not injected, no deferrals are
+        generated (no account data to work from).
         """
+        from app.transactions.gl.gl_posting_engine import (
+            JournalEntry,
+            JournalEntryLine,
+        )
+
         if self._gl_posting_engine is None:
             logger.warning(
                 "gl_posting_engine_not_available_for_deferrals",
@@ -761,22 +840,137 @@ class PeriodCloseManager:
             )
             return
 
-        # In a production system this would query the database for prepaid
-        # items requiring deferral.  For the MVP, we create a placeholder
-        # batch based on available data.  The GL posting engine validates
-        # balance (DR = CR) and period status for every entry.
         deferral_count = 0
 
-        # Query the account balance manager for any deferred revenue or
-        # prepaid expense accounts with balances requiring amortisation.
-        if self._account_balance_manager is not None:
-            all_balances = await self._account_balance_manager.get_all_balances()
-            # Identify accounts that may need deferrals (convention: account
-            # codes starting with "1300" for prepaid, "2300" for deferred rev)
-            for acc_code, acc_bal in all_balances.items():
-                if acc_code.startswith(("1300", "2300")):
-                    if acc_bal.current_balance > Decimal("0.00"):
+        if self._account_balance_manager is None:
+            logger.warning(
+                "balance_manager_not_available_for_deferrals",
+                service_name="transactions",
+                component="PeriodCloseManager",
+                period_id=period_id,
+                reason="AccountBalanceManager not injected — no deferral candidates",
+            )
+            result.deferrals_generated = 0
+            return
+
+        # Determine period length for straight-line daily calculation
+        period_start, period_end = self._extract_period_dates(
+            fiscal_period, period_id
+        )
+        days_in_period = max((period_end - period_start).days + 1, 1)
+
+        all_balances = await self._account_balance_manager.get_all_balances()
+
+        for acc_code, acc_bal in all_balances.items():
+            if acc_bal.current_balance <= Decimal("0.00"):
+                continue
+
+            entry: Optional[JournalEntry] = None
+
+            if acc_code.startswith("1300"):
+                # Prepaid expense deferral: DR Expense (6000), CR Prepaid
+                # Recognise one period's worth of the prepaid balance
+                deferral_amount = (
+                    acc_bal.current_balance / Decimal(str(days_in_period))
+                ).quantize(Decimal("0.01"))
+                if deferral_amount <= Decimal("0.00"):
+                    continue
+
+                entry = JournalEntry(
+                    posting_date=period_end,
+                    period_id=period_id,
+                    description=(
+                        f"Deferral — prepaid expense recognition for "
+                        f"account {acc_code}, period {period_id}"
+                    ),
+                    source_document_type="deferral",
+                    source_document_id=f"DEF-{period_id}-{acc_code}",
+                    lines=[
+                        JournalEntryLine(
+                            line_number=1,
+                            account_code="6000",
+                            account_name="General Expense",
+                            debit_amount=deferral_amount,
+                            credit_amount=Decimal("0.00"),
+                            description=f"Prepaid deferral from {acc_code}",
+                        ),
+                        JournalEntryLine(
+                            line_number=2,
+                            account_code=acc_code,
+                            account_name=f"Prepaid ({acc_code})",
+                            debit_amount=Decimal("0.00"),
+                            credit_amount=deferral_amount,
+                            description=f"Prepaid deferral recognition",
+                        ),
+                    ],
+                    simulation_id=simulation_id,
+                    created_by="PeriodCloseManager",
+                )
+
+            elif acc_code.startswith("2300"):
+                # Deferred revenue deferral: DR Deferred Revenue, CR Revenue (4000)
+                deferral_amount = (
+                    acc_bal.current_balance / Decimal(str(days_in_period))
+                ).quantize(Decimal("0.01"))
+                if deferral_amount <= Decimal("0.00"):
+                    continue
+
+                entry = JournalEntry(
+                    posting_date=period_end,
+                    period_id=period_id,
+                    description=(
+                        f"Deferral — unearned revenue recognition for "
+                        f"account {acc_code}, period {period_id}"
+                    ),
+                    source_document_type="deferral",
+                    source_document_id=f"DEF-{period_id}-{acc_code}",
+                    lines=[
+                        JournalEntryLine(
+                            line_number=1,
+                            account_code=acc_code,
+                            account_name=f"Deferred Revenue ({acc_code})",
+                            debit_amount=deferral_amount,
+                            credit_amount=Decimal("0.00"),
+                            description=f"Deferred revenue recognition",
+                        ),
+                        JournalEntryLine(
+                            line_number=2,
+                            account_code="4000",
+                            account_name="Revenue",
+                            debit_amount=Decimal("0.00"),
+                            credit_amount=deferral_amount,
+                            description=f"Revenue from deferred {acc_code}",
+                        ),
+                    ],
+                    simulation_id=simulation_id,
+                    created_by="PeriodCloseManager",
+                )
+
+            if entry is not None:
+                try:
+                    posting_result = await self._gl_posting_engine.post_journal_entry(
+                        entry, simulation_id=simulation_id
+                    )
+                    if posting_result.success:
                         deferral_count += 1
+                    else:
+                        logger.warning(
+                            "deferral_posting_failed",
+                            service_name="transactions",
+                            component="PeriodCloseManager",
+                            account_code=acc_code,
+                            error=posting_result.error_message,
+                            period_id=period_id,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "deferral_posting_error",
+                        service_name="transactions",
+                        component="PeriodCloseManager",
+                        account_code=acc_code,
+                        error=str(exc),
+                        period_id=period_id,
+                    )
 
         result.deferrals_generated = deferral_count
         self._total_deferrals_generated += deferral_count
@@ -804,13 +998,31 @@ class PeriodCloseManager:
     ) -> None:
         """Generate and post depreciation entries for fixed assets.
 
-        Depreciation entries debit the depreciation expense account and
-        credit the accumulated depreciation account.  Each entry is
-        posted via the GL posting engine with full balance validation.
+        Creates a GL journal entry for each fixed asset account (codes
+        starting with ``"15"``) that has a positive balance.  Depreciation
+        uses the **straight-line method** (AAP §0.1.2 and
+        ``config/transactions/period_close.yaml``):
 
-        When the GLPostingEngine is not injected, logs a warning and
-        skips.
+            Monthly Depreciation = (Cost − Salvage Value) / Useful Life Months
+
+        For the MVP the salvage value percentage defaults to 10% and the
+        useful life defaults to 60 months (5 years) unless the configuration
+        specifies otherwise.  Each entry debits Depreciation Expense (6100)
+        and credits Accumulated Depreciation (1350), matching the posting
+        rules in ``period_close.yaml``.
+
+        Entries are posted via the ``GLPostingEngine`` with full balance
+        validation.
+
+        When the GLPostingEngine is not injected, logs a warning and skips.
+        When the AccountBalanceManager is not injected, no depreciation
+        entries are generated.
         """
+        from app.transactions.gl.gl_posting_engine import (
+            JournalEntry,
+            JournalEntryLine,
+        )
+
         if self._gl_posting_engine is None:
             logger.warning(
                 "gl_posting_engine_not_available_for_depreciation",
@@ -823,13 +1035,111 @@ class PeriodCloseManager:
 
         depreciation_count = 0
 
-        # Query fixed asset accounts from the balance manager
-        if self._account_balance_manager is not None:
-            all_balances = await self._account_balance_manager.get_all_balances()
-            # Fixed asset accounts conventionally start with "1500"-"1599"
-            for acc_code, acc_bal in all_balances.items():
-                if acc_code.startswith("15") and acc_bal.current_balance > Decimal("0.00"):
+        if self._account_balance_manager is None:
+            logger.warning(
+                "balance_manager_not_available_for_depreciation",
+                service_name="transactions",
+                component="PeriodCloseManager",
+                period_id=period_id,
+                reason="AccountBalanceManager not injected — no depreciation candidates",
+            )
+            result.depreciation_entries = 0
+            return
+
+        # Depreciation parameters from config/transactions/period_close.yaml
+        # Defaults: straight-line, 60-month useful life, 10% salvage value
+        default_useful_life_months = 60
+        default_salvage_pct = Decimal("0.10")
+        depreciation_debit_account = "6100"   # Depreciation Expense
+        depreciation_credit_account = "1350"  # Accumulated Depreciation
+
+        period_start, period_end = self._extract_period_dates(
+            fiscal_period, period_id
+        )
+
+        all_balances = await self._account_balance_manager.get_all_balances()
+
+        for acc_code, acc_bal in all_balances.items():
+            # Fixed asset accounts conventionally start with "15" (range 1500-1599)
+            if not acc_code.startswith("15"):
+                continue
+            # Skip the contra-asset accumulated depreciation account itself
+            if acc_code == depreciation_credit_account:
+                continue
+            if acc_bal.current_balance <= Decimal("0.00"):
+                continue
+
+            # Calculate straight-line monthly depreciation:
+            # Monthly = (Cost * (1 - salvage_pct)) / useful_life_months
+            depreciable_base = acc_bal.current_balance * (
+                Decimal("1.00") - default_salvage_pct
+            )
+            monthly_depreciation = (
+                depreciable_base / Decimal(str(default_useful_life_months))
+            ).quantize(Decimal("0.01"))
+
+            if monthly_depreciation <= Decimal("0.00"):
+                continue
+
+            entry = JournalEntry(
+                posting_date=period_end,
+                period_id=period_id,
+                description=(
+                    f"Depreciation — straight-line for fixed asset "
+                    f"account {acc_code}, period {period_id}"
+                ),
+                source_document_type="depreciation",
+                source_document_id=f"DEP-{period_id}-{acc_code}",
+                lines=[
+                    JournalEntryLine(
+                        line_number=1,
+                        account_code=depreciation_debit_account,
+                        account_name="Depreciation Expense",
+                        debit_amount=monthly_depreciation,
+                        credit_amount=Decimal("0.00"),
+                        description=(
+                            f"Depreciation expense for asset {acc_code}"
+                        ),
+                    ),
+                    JournalEntryLine(
+                        line_number=2,
+                        account_code=depreciation_credit_account,
+                        account_name="Accumulated Depreciation",
+                        debit_amount=Decimal("0.00"),
+                        credit_amount=monthly_depreciation,
+                        description=(
+                            f"Accumulated depreciation for asset {acc_code}"
+                        ),
+                    ),
+                ],
+                simulation_id=simulation_id,
+                created_by="PeriodCloseManager",
+            )
+
+            try:
+                posting_result = await self._gl_posting_engine.post_journal_entry(
+                    entry, simulation_id=simulation_id
+                )
+                if posting_result.success:
                     depreciation_count += 1
+                else:
+                    logger.warning(
+                        "depreciation_posting_failed",
+                        service_name="transactions",
+                        component="PeriodCloseManager",
+                        account_code=acc_code,
+                        error=posting_result.error_message,
+                        period_id=period_id,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "depreciation_posting_error",
+                    service_name="transactions",
+                    component="PeriodCloseManager",
+                    account_code=acc_code,
+                    error=str(exc),
+                    period_id=period_id,
+                )
 
         result.depreciation_entries = depreciation_count
         self._total_depreciation_entries += depreciation_count
@@ -855,15 +1165,35 @@ class PeriodCloseManager:
         result: PeriodCloseResult,
         simulation_id: Optional[UUID] = None,
     ) -> None:
-        """Process recurring journal entry templates for the period.
+        """Post recurring journal entries from templates for the period.
 
-        Recurring JEs are standard entries that are posted every period
-        (e.g. rent, insurance, amortisation).  Each template is posted
-        via the GL posting engine.
+        Loads recurring JE template definitions from
+        ``config/transactions/period_close.yaml`` (``recurring_journal_entries``
+        section) and creates a new GL journal entry for each template with
+        ``frequency: "monthly"``.
 
-        When the GLPostingEngine is not injected, logs a warning and
-        skips.
+        Template types:
+        * **Fixed amount** (``amount_type: "fixed"``): Uses the dollar amount
+          specified in the template's ``amount`` field directly.
+        * **Calculated amount** (``amount_type: "calculated"``): Derives the
+          amount from current account balances (e.g., 1/12 of prepaid
+          insurance, loan interest accrual).  Uses a default of ``$1,000.00``
+          when no balance-based calculation is possible.
+
+        Each entry debits and credits the accounts specified in the template
+        and is posted via the ``GLPostingEngine`` with full balance validation.
+
+        When the GLPostingEngine is not injected, logs a warning and skips.
+
+        References:
+            - config/transactions/period_close.yaml §recurring_journal_entries
+            - AAP §0.5.1 Group 4 (PeriodCloseManager — step 5)
         """
+        from app.transactions.gl.gl_posting_engine import (
+            JournalEntry,
+            JournalEntryLine,
+        )
+
         if self._gl_posting_engine is None:
             logger.warning(
                 "gl_posting_engine_not_available_for_recurring_jes",
@@ -876,22 +1206,103 @@ class PeriodCloseManager:
 
         recurring_count = 0
 
-        # In a production system this would load recurring JE templates
-        # from the database or configuration.  For the MVP, we identify
-        # recurring patterns from posted entries.
-        if self._gl_posting_engine is not None:
-            posted_entries = getattr(
-                self._gl_posting_engine, "_posted_entries", []
+        # Load recurring JE templates from configuration
+        templates = self._load_recurring_je_templates()
+
+        period_start, period_end = self._extract_period_dates(
+            fiscal_period, period_id
+        )
+
+        for template in templates:
+            template_name = template.get("name", "unknown")
+            frequency = template.get("frequency", "monthly")
+
+            # Only process templates that match the current frequency
+            if frequency != "monthly":
+                continue
+
+            debit_account = str(template.get("debit_account", ""))
+            credit_account = str(template.get("credit_account", ""))
+            debit_account_name = template.get("debit_account_name", "")
+            credit_account_name = template.get("credit_account_name", "")
+            description = template.get("description", f"Recurring JE: {template_name}")
+            amount_type = template.get("amount_type", "fixed")
+
+            # Determine the entry amount
+            if amount_type == "fixed" and template.get("amount") is not None:
+                entry_amount = Decimal(str(template["amount"])).quantize(
+                    Decimal("0.01")
+                )
+            else:
+                # Calculated amount — derive from account balances when
+                # possible; fall back to a sensible default
+                entry_amount = await self._calculate_recurring_amount(
+                    template_name=template_name,
+                    credit_account=credit_account,
+                )
+
+            if entry_amount <= Decimal("0.00"):
+                logger.debug(
+                    "recurring_je_zero_amount_skipped",
+                    service_name="transactions",
+                    component="PeriodCloseManager",
+                    template_name=template_name,
+                    period_id=period_id,
+                )
+                continue
+
+            entry = JournalEntry(
+                posting_date=period_end,
+                period_id=period_id,
+                description=description,
+                source_document_type="recurring_journal_entry",
+                source_document_id=f"RJE-{period_id}-{template_name}",
+                lines=[
+                    JournalEntryLine(
+                        line_number=1,
+                        account_code=debit_account,
+                        account_name=debit_account_name,
+                        debit_amount=entry_amount,
+                        credit_amount=Decimal("0.00"),
+                        description=f"Recurring: {description}",
+                    ),
+                    JournalEntryLine(
+                        line_number=2,
+                        account_code=credit_account,
+                        account_name=credit_account_name,
+                        debit_amount=Decimal("0.00"),
+                        credit_amount=entry_amount,
+                        description=f"Recurring: {description}",
+                    ),
+                ],
+                simulation_id=simulation_id,
+                created_by="PeriodCloseManager",
             )
-            # Count entries in this period marked as recurring via source doc
-            for entry in posted_entries:
-                src_type = getattr(entry, "source_document_type", None)
-                entry_period = getattr(entry, "period_id", None)
-                if (
-                    src_type == "recurring_journal_entry"
-                    and entry_period == period_id
-                ):
+
+            try:
+                posting_result = await self._gl_posting_engine.post_journal_entry(
+                    entry, simulation_id=simulation_id
+                )
+                if posting_result.success:
                     recurring_count += 1
+                else:
+                    logger.warning(
+                        "recurring_je_posting_failed",
+                        service_name="transactions",
+                        component="PeriodCloseManager",
+                        template_name=template_name,
+                        error=posting_result.error_message,
+                        period_id=period_id,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "recurring_je_posting_error",
+                    service_name="transactions",
+                    component="PeriodCloseManager",
+                    template_name=template_name,
+                    error=str(exc),
+                    period_id=period_id,
+                )
 
         result.recurring_entries = recurring_count
         self._total_recurring_entries += recurring_count
@@ -1504,6 +1915,114 @@ class PeriodCloseManager:
             period_num = getattr(fiscal_period, "period_number", 0)
 
         return f"FY{year}-P{period_num:02d}"
+
+    # ------------------------------------------------------------------
+    # Recurring JE Template Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _load_recurring_je_templates() -> List[Dict[str, Any]]:
+        """Load recurring JE templates from ``config/transactions/period_close.yaml``.
+
+        Reads the ``recurring_journal_entries.templates`` list from the
+        YAML configuration file.  Returns an empty list if the file
+        cannot be found or parsed, enabling graceful degradation.
+
+        Returns:
+            List of template dictionaries, each with keys ``name``,
+            ``description``, ``frequency``, ``debit_account``,
+            ``credit_account``, ``amount_type``, and ``amount``.
+        """
+        import os
+
+        config_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__)
+            )))),
+            "config",
+            "transactions",
+            "period_close.yaml",
+        )
+
+        try:
+            import yaml  # type: ignore[import-untyped]
+
+            with open(config_path, "r", encoding="utf-8") as fh:
+                config_data = yaml.safe_load(fh) or {}
+            rje_section = config_data.get("recurring_journal_entries", {})
+            templates = rje_section.get("templates", [])
+            return templates if isinstance(templates, list) else []
+        except FileNotFoundError:
+            logger.warning(
+                "recurring_je_config_not_found",
+                service_name="transactions",
+                component="PeriodCloseManager",
+                config_path=config_path,
+            )
+            return []
+        except Exception as exc:
+            logger.warning(
+                "recurring_je_config_load_error",
+                service_name="transactions",
+                component="PeriodCloseManager",
+                error=str(exc),
+            )
+            return []
+
+    async def _calculate_recurring_amount(
+        self,
+        template_name: str,
+        credit_account: str,
+    ) -> Decimal:
+        """Calculate the amount for a ``calculated`` recurring JE template.
+
+        For templates where ``amount_type`` is ``"calculated"``, this method
+        derives the monthly amount from the balance of the credit account.
+        For example, monthly insurance expense = balance of Prepaid Insurance
+        account / 12.
+
+        If the ``AccountBalanceManager`` is not available or the account
+        has no balance, a sensible default of ``$1,000.00`` is used.
+
+        Args:
+            template_name: Name of the recurring JE template (for logging).
+            credit_account: The credit account code from the template.
+
+        Returns:
+            Calculated ``Decimal`` amount, quantized to ``$0.01``.
+        """
+        default_amount = Decimal("1000.00")
+
+        if self._account_balance_manager is None:
+            return default_amount
+
+        try:
+            account_balance = await self._account_balance_manager.get_balance(
+                credit_account
+            )
+            if account_balance is not None:
+                balance = account_balance.current_balance
+                if balance > Decimal("0.00"):
+                    # Amortise over 12 months (1/12 of remaining balance)
+                    calculated = (balance / Decimal("12")).quantize(
+                        Decimal("0.01")
+                    )
+                    return calculated if calculated > Decimal("0.00") else default_amount
+        except Exception as exc:
+            logger.debug(
+                "recurring_amount_calc_error",
+                service_name="transactions",
+                component="PeriodCloseManager",
+                template_name=template_name,
+                credit_account=credit_account,
+                error=str(exc),
+            )
+
+        return default_amount
+
+    # ------------------------------------------------------------------
+    # Period Date Extraction
+    # ------------------------------------------------------------------
 
     def _extract_period_dates(
         self, fiscal_period: Optional[Any], period_id: str

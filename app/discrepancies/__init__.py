@@ -96,22 +96,18 @@ from app.discrepancies.discrepancy_catalog import DiscrepancyCatalog
 # ---------------------------------------------------------------------------
 
 __all__: list[str] = [
-    # Core classes
+    # Core classes — only symbols actually imported into this namespace
     "BaseDiscrepancy",
     "DiscrepancyInjector",
     "GroundTruthGenerator",
     "DiscrepancyCatalog",
-    # Sub-packages (documented but not eagerly imported)
-    "p2p",
-    "o2c",
-    "gl",
-    "control",
 ]
 """Public API of the ``app.discrepancies`` package.
 
 Sub-packages (``p2p``, ``o2c``, ``gl``, ``control``) are NOT eagerly imported
-to keep ``import app.discrepancies`` lightweight. Consumers should import
-specific discrepancy types directly::
+into this namespace to keep ``import app.discrepancies`` lightweight.  They are
+intentionally excluded from ``__all__`` to prevent ``AttributeError`` on star
+imports.  Consumers should import specific discrepancy types directly::
 
     from app.discrepancies.p2p.duplicate_invoice import DuplicateInvoice
     from app.discrepancies.gl.unbalanced_journal import UnbalancedJournal

@@ -536,46 +536,52 @@ class SimulationEngine:
 
         # ── Step 2b: P3 Transaction Generation (P2P + O2C) ──────────
         # Guarded by enable_p3_transactions config toggle and injected generators.
-        # Each generator receives the DayContext and returns a result dict with
+        # Each generator receives a GenerationContext (NOT DayContext) built
+        # from the current DayContext, and returns a result dict with
         # cycles_completed count. Failures per-generator are logged and skipped.
         total_p2p_cycles: int = 0
         total_o2c_cycles: int = 0
 
-        if self.config.enable_p3_transactions and self._p2p_generators:
-            for gen_name, gen in self._p2p_generators.items():
-                try:
-                    gen_result = await gen.generate(day_context)
-                    cycles = (
-                        gen_result.get("cycles_completed", 0)
-                        if isinstance(gen_result, dict)
-                        else 0
-                    )
-                    total_p2p_cycles += cycles
-                except Exception as p2p_err:
-                    logger.warning(
-                        "p2p_generator_error",
-                        generator=gen_name,
-                        error=str(p2p_err),
-                        simulation_date=str(sim_date),
-                    )
+        if self.config.enable_p3_transactions and (
+            self._p2p_generators or self._o2c_generators
+        ):
+            gen_context = self._create_generation_context(day_context)
 
-        if self.config.enable_p3_transactions and self._o2c_generators:
-            for gen_name, gen in self._o2c_generators.items():
-                try:
-                    gen_result = await gen.generate(day_context)
-                    cycles = (
-                        gen_result.get("cycles_completed", 0)
-                        if isinstance(gen_result, dict)
-                        else 0
-                    )
-                    total_o2c_cycles += cycles
-                except Exception as o2c_err:
-                    logger.warning(
-                        "o2c_generator_error",
-                        generator=gen_name,
-                        error=str(o2c_err),
-                        simulation_date=str(sim_date),
-                    )
+            if self._p2p_generators:
+                for gen_name, gen in self._p2p_generators.items():
+                    try:
+                        gen_result = await gen.generate(gen_context)
+                        cycles = (
+                            gen_result.get("cycles_completed", 0)
+                            if isinstance(gen_result, dict)
+                            else 0
+                        )
+                        total_p2p_cycles += cycles
+                    except Exception as p2p_err:
+                        logger.warning(
+                            "p2p_generator_error",
+                            generator=gen_name,
+                            error=str(p2p_err),
+                            simulation_date=str(sim_date),
+                        )
+
+            if self._o2c_generators:
+                for gen_name, gen in self._o2c_generators.items():
+                    try:
+                        gen_result = await gen.generate(gen_context)
+                        cycles = (
+                            gen_result.get("cycles_completed", 0)
+                            if isinstance(gen_result, dict)
+                            else 0
+                        )
+                        total_o2c_cycles += cycles
+                    except Exception as o2c_err:
+                        logger.warning(
+                            "o2c_generator_error",
+                            generator=gen_name,
+                            error=str(o2c_err),
+                            simulation_date=str(sim_date),
+                        )
 
         day_context.p2p_cycles_completed = total_p2p_cycles
         day_context.o2c_cycles_completed = total_o2c_cycles
@@ -742,14 +748,24 @@ class SimulationEngine:
 
         # ── Step 4.6: P3 Period Close Check ──────────────────────────
         # Execute the 10-step fiscal period close process when the
-        # day_context indicates a period is closing.  Produces
-        # period_closes_completed and trial_balance_checks_passed metrics.
+        # day_context indicates a period is closing.  Uses the
+        # PeriodCloseManager.execute_period_close() high-level wrapper
+        # which internally extracts parameters and delegates to
+        # close_period().
         if self._period_close_manager is not None and day_context.is_period_closing():
             try:
                 pc_result = await self._period_close_manager.execute_period_close(
                     day_context=day_context,
                 )
-                if isinstance(pc_result, dict):
+                # PeriodCloseResult is a Pydantic model; extract metrics
+                if hasattr(pc_result, "success"):
+                    if pc_result.success:
+                        day_context.period_closes_completed = 1
+                    # Check if trial balance step passed (it's in steps_completed)
+                    if hasattr(pc_result, "steps_completed"):
+                        if "trial_balance_validation" in pc_result.steps_completed:
+                            day_context.trial_balance_checks_passed = 1
+                elif isinstance(pc_result, dict):
                     day_context.period_closes_completed = 1
                     day_context.trial_balance_checks_passed = pc_result.get(
                         "trial_balance_passed", 0,
@@ -794,6 +810,70 @@ class SimulationEngine:
             rework_attempts=day_context.rework_attempts,
             period_closes=day_context.period_closes_completed,
         )
+
+    # ------------------------------------------------------------------
+    # P3 Integration Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _create_generation_context(day_context: DayContext) -> Any:
+        """Create a :class:`GenerationContext` from a :class:`DayContext`.
+
+        P3 transaction generators expect a ``GenerationContext`` (from
+        ``app.transactions.base_generator``) rather than a ``DayContext``.
+        This factory maps the DayContext fields to the GenerationContext
+        fields, carrying the DayContext itself as the ``day_context``
+        field for access to P3-specific state lists.
+
+        Args:
+            day_context: The current day's simulation context.
+
+        Returns:
+            A :class:`GenerationContext` instance populated from the
+            DayContext.
+        """
+        from app.transactions.base_generator import GenerationContext
+
+        fiscal_info = day_context.fiscal_period
+        fiscal_period_str = ""
+        if fiscal_info.fiscal_year and fiscal_info.fiscal_month:
+            fiscal_period_str = (
+                f"{fiscal_info.fiscal_year}-{fiscal_info.fiscal_month:02d}"
+            )
+        fiscal_status = fiscal_info.period_status.upper() if fiscal_info.period_status else "OPEN"
+
+        return GenerationContext(
+            simulation_id=UUID(day_context.simulation_id)
+            if day_context.simulation_id
+            else uuid4(),
+            current_date=day_context.simulation_date,
+            fiscal_period=fiscal_period_str,
+            fiscal_period_status=fiscal_status,
+            day_number=max(day_context.day_number, 1),
+            day_context=day_context,
+        )
+
+    @staticmethod
+    def _derive_period_id(fiscal_info: Any, sim_date: date) -> str:
+        """Derive a period identifier from the fiscal info and date.
+
+        Produces a period ID in the format ``FY{YYYY}-P{NN}`` when the
+        fiscal year and month are available, or falls back to
+        ``{YYYY}-{MM}`` from the simulation date.
+
+        Args:
+            fiscal_info: ``FiscalPeriodInfo`` from the DayContext.
+            sim_date: The current simulation date.
+
+        Returns:
+            A string period identifier.
+        """
+        year = getattr(fiscal_info, "fiscal_year", 0)
+        month = getattr(fiscal_info, "fiscal_month", 0)
+
+        if year and month:
+            return f"FY{year}-P{month:02d}"
+        return f"{sim_date.year}-{sim_date.month:02d}"
 
     # ------------------------------------------------------------------
     # Agent processing helper
