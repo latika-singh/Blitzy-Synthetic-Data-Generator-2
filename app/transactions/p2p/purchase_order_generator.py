@@ -615,10 +615,15 @@ class PurchaseOrderGenerator(TransactionGenerator):
             # 11. Request approval via ApprovalSystem if required
             if approval_info.required and self._approval_system is not None:
                 try:
+                    # NOTE: ApprovalSystem.request_approval expects a numeric
+                    # amount.  We pass the Decimal directly; if the approval
+                    # system internally needs float, the conversion happens at
+                    # the boundary closest to the consumer, preserving full
+                    # Decimal precision within the transaction layer.
                     await self._approval_system.request_approval(
                         transaction_type="purchase_order",
                         transaction_id=str(po_header.po_id),
-                        amount=float(total_amount),
+                        amount=total_amount,
                         metadata={
                             "po_number": po_number,
                             "vendor_name": vendor_name,
@@ -1094,11 +1099,16 @@ class PurchaseOrderGenerator(TransactionGenerator):
         if self._amount_distribution is not None:
             try:
                 sampled = self._amount_distribution.sample_po_amount(n=1)
-                sampled_decimal = Decimal(str(float(sampled)))
+                # Immediately convert the float sample to Decimal with
+                # explicit 2-decimal-place rounding (AAP §0.7.2 — Decimal
+                # precision: convert at the earliest possible point).
+                sampled_decimal = Decimal(str(float(sampled))).quantize(
+                    Decimal("0.01"), rounding=decimal.ROUND_HALF_UP
+                )
                 # Use sampled amount as a scaling factor, keeping it
                 # within a reasonable range relative to the base price
                 if sampled_decimal > Decimal("0"):
-                    return sampled_decimal.quantize(Decimal("0.01"))
+                    return sampled_decimal
             except Exception:
                 pass
 

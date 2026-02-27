@@ -73,6 +73,14 @@ from uuid import UUID, uuid4
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
 
+from tenacity import (
+    AsyncRetrying,
+    RetryError,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
 from app.transactions.exceptions import (
     BalanceError,
     GLPostingError,
@@ -633,113 +641,116 @@ class GLPostingEngine:
                 },
             )
 
-        # --- Retry wrapper with exponential backoff ---
+        # --- Retry wrapper using tenacity (AAP §0.7.4) ---
+        # GL posting: 3 attempts, exponential backoff (1s, 2s, 4s), 30s timeout
         gl_retry_config = RETRY_POLICIES.get("gl_posting", {})
         max_attempts: int = int(gl_retry_config.get("max_attempts", 3))
-        backoff_seconds: List[float] = [
-            float(s) for s in gl_retry_config.get("backoff_seconds", [1, 2, 4])
-        ]
         timeout_seconds: float = float(
             gl_retry_config.get("timeout_seconds", 30)
         )
 
-        last_exception: Optional[Exception] = None
+        try:
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(max_attempts),
+                wait=wait_exponential(multiplier=1, min=1, max=4),
+                retry=retry_if_exception_type(
+                    (GLPostingError, ConcurrencyError, asyncio.TimeoutError),
+                ),
+                reraise=True,
+            ):
+                with attempt:
+                    attempt_number = attempt.retry_state.attempt_number
+                    try:
+                        result = await asyncio.wait_for(
+                            self._execute_posting(
+                                entry=entry,
+                                simulation_id=entry_sim_id,
+                                start_ts=start_ts,
+                            ),
+                            timeout=timeout_seconds,
+                        )
+                        return result
 
-        for attempt in range(1, max_attempts + 1):
-            try:
-                result = await asyncio.wait_for(
-                    self._execute_posting(
-                        entry=entry,
-                        simulation_id=entry_sim_id,
-                        start_ts=start_ts,
-                    ),
-                    timeout=timeout_seconds,
-                )
-                return result
+                    except (BalanceError, PeriodClosedError):
+                        # Non-retryable errors — rollback and propagate immediately
+                        self._rollback_entry(entry)
+                        self._circuit_breaker.record_failure()
+                        self._entries_rejected += 1
+                        raise
 
-            except (BalanceError, PeriodClosedError):
-                # Non-retryable errors — rollback and propagate immediately
-                self._rollback_entry(entry)
-                self._circuit_breaker.record_failure()
-                self._entries_rejected += 1
-                raise
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "gl_posting_timeout",
+                            service_name="transactions",
+                            component="GLPostingEngine",
+                            entry_id=str(entry.entry_id),
+                            attempt=attempt_number,
+                            max_attempts=max_attempts,
+                            timeout_seconds=timeout_seconds,
+                            simulation_id=str(entry_sim_id) if entry_sim_id else None,
+                        )
+                        raise
 
-            except asyncio.TimeoutError:
-                last_exception = asyncio.TimeoutError(
-                    f"GL posting timed out after {timeout_seconds}s "
-                    f"(attempt {attempt}/{max_attempts})"
-                )
-                logger.warning(
-                    "gl_posting_timeout",
-                    service_name="transactions",
-                    component="GLPostingEngine",
-                    entry_id=str(entry.entry_id),
-                    attempt=attempt,
-                    max_attempts=max_attempts,
-                    timeout_seconds=timeout_seconds,
-                    simulation_id=str(entry_sim_id) if entry_sim_id else None,
-                )
+                    except (GLPostingError, ConcurrencyError, TransactionError) as exc:
+                        logger.warning(
+                            "gl_posting_attempt_failed",
+                            service_name="transactions",
+                            component="GLPostingEngine",
+                            entry_id=str(entry.entry_id),
+                            attempt=attempt_number,
+                            max_attempts=max_attempts,
+                            error=str(exc),
+                            simulation_id=str(entry_sim_id) if entry_sim_id else None,
+                        )
+                        raise
 
-            except (GLPostingError, ConcurrencyError, TransactionError) as exc:
-                last_exception = exc
-                logger.warning(
-                    "gl_posting_attempt_failed",
-                    service_name="transactions",
-                    component="GLPostingEngine",
-                    entry_id=str(entry.entry_id),
-                    attempt=attempt,
-                    max_attempts=max_attempts,
-                    error=str(exc),
-                    simulation_id=str(entry_sim_id) if entry_sim_id else None,
-                )
+                    except Exception as exc:
+                        logger.error(
+                            "gl_posting_unexpected_error",
+                            service_name="transactions",
+                            component="GLPostingEngine",
+                            entry_id=str(entry.entry_id),
+                            attempt=attempt_number,
+                            max_attempts=max_attempts,
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                            simulation_id=str(entry_sim_id) if entry_sim_id else None,
+                        )
+                        raise
 
-            except Exception as exc:
-                last_exception = exc
-                logger.error(
-                    "gl_posting_unexpected_error",
-                    service_name="transactions",
-                    component="GLPostingEngine",
-                    entry_id=str(entry.entry_id),
-                    attempt=attempt,
-                    max_attempts=max_attempts,
-                    error=str(exc),
-                    error_type=type(exc).__name__,
-                    simulation_id=str(entry_sim_id) if entry_sim_id else None,
-                )
+        except RetryError as retry_exc:
+            # All attempts exhausted — record failure and rollback
+            self._circuit_breaker.record_failure()
+            self._entries_rejected += 1
+            self._rollback_entry(entry)
 
-            # Exponential backoff between retries
-            if attempt < max_attempts:
-                backoff_idx = min(attempt - 1, len(backoff_seconds) - 1)
-                wait_time = backoff_seconds[backoff_idx] if backoff_seconds else 1.0
-                await asyncio.sleep(wait_time)
+            elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
+            last_exception = retry_exc.last_attempt.exception()
+            logger.error(
+                "gl_posting_all_attempts_exhausted",
+                service_name="transactions",
+                component="GLPostingEngine",
+                entry_id=str(entry.entry_id),
+                max_attempts=max_attempts,
+                duration_ms=round(elapsed_ms, 2),
+                simulation_id=str(entry_sim_id) if entry_sim_id else None,
+            )
 
-        # All attempts exhausted — record failure and rollback
-        self._circuit_breaker.record_failure()
-        self._entries_rejected += 1
-        self._rollback_entry(entry)
+            if isinstance(last_exception, (GLPostingError, TransactionError)):
+                raise last_exception
+            raise GLPostingError(
+                f"GL posting failed after {max_attempts} attempts: "
+                f"{last_exception}",
+                details={
+                    "entry_id": str(entry.entry_id),
+                    "attempts": max_attempts,
+                    "last_error": str(last_exception),
+                },
+            ) from last_exception
 
-        elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
-        logger.error(
-            "gl_posting_all_attempts_exhausted",
-            service_name="transactions",
-            component="GLPostingEngine",
-            entry_id=str(entry.entry_id),
-            max_attempts=max_attempts,
-            duration_ms=round(elapsed_ms, 2),
-            simulation_id=str(entry_sim_id) if entry_sim_id else None,
-        )
-
-        if isinstance(last_exception, (GLPostingError, TransactionError)):
-            raise last_exception
-        raise GLPostingError(
-            f"GL posting failed after {max_attempts} attempts: "
-            f"{last_exception}",
-            details={
-                "entry_id": str(entry.entry_id),
-                "attempts": max_attempts,
-                "last_error": str(last_exception),
-            },
-        )
+        except (BalanceError, PeriodClosedError):
+            # These propagate through tenacity (non-retryable)
+            raise
 
     async def _execute_posting(
         self,

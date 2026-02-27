@@ -85,6 +85,17 @@ from app.discrepancies.gl.unusual_account_combo import UnusualAccountCombo
 from app.discrepancies.gl.manual_override import ManualOverride
 
 # ---------------------------------------------------------------------------
+# Programmatic type-code → class mapping (consistent with P2P and O2C packages)
+# ---------------------------------------------------------------------------
+GL_DISCREPANCY_CLASSES: dict[str, type] = {
+    "GL-001": UnbalancedJournal,
+    "GL-002": JournalNoApproval,
+    "GL-003": SuspiciousAdjusting,
+    "GL-004": UnusualAccountCombo,
+    "GL-005": ManualOverride,
+}
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 __all__: list[str] = [
@@ -93,4 +104,5 @@ __all__: list[str] = [
     "SuspiciousAdjusting",
     "UnusualAccountCombo",
     "ManualOverride",
+    "GL_DISCREPANCY_CLASSES",
 ]

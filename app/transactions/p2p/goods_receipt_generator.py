@@ -826,8 +826,8 @@ class GoodsReceiptGenerator(TransactionGenerator):
                 total_debits = Decimal("0")
                 total_credits = Decimal("0")
                 for entry in result.gl_entries:
-                    total_debits += Decimal(str(entry.get("debit", "0")))
-                    total_credits += Decimal(str(entry.get("credit", "0")))
+                    total_debits += Decimal(str(entry.get("debit_amount", entry.get("debit", "0"))))
+                    total_credits += Decimal(str(entry.get("credit_amount", entry.get("credit", "0"))))
 
                 imbalance = abs(total_debits - total_credits)
                 if imbalance > GL_BALANCE_TOLERANCE:
@@ -915,8 +915,8 @@ class GoodsReceiptGenerator(TransactionGenerator):
         total_debits = Decimal("0")
         total_credits = Decimal("0")
         for entry in result.gl_entries:
-            total_debits += Decimal(str(entry.get("debit", "0")))
-            total_credits += Decimal(str(entry.get("credit", "0")))
+            total_debits += Decimal(str(entry.get("debit_amount", entry.get("debit", "0"))))
+            total_credits += Decimal(str(entry.get("credit_amount", entry.get("credit", "0"))))
 
         imbalance = abs(total_debits - total_credits)
         if imbalance > GL_BALANCE_TOLERANCE:
@@ -1116,8 +1116,8 @@ class GoodsReceiptGenerator(TransactionGenerator):
 
             gl_entries.append({
                 "account": inventory_account,
-                "debit": str(debit_amount),
-                "credit": str(Decimal("0")),
+                "debit_amount": str(debit_amount),
+                "credit_amount": str(Decimal("0")),
                 "description": (
                     f"Inventory receipt — {line.description or 'Line ' + str(line.line_number)} "
                     f"(GR: {receipt_header.receipt_number}, PO: {receipt_header.po_number})"
@@ -1138,8 +1138,8 @@ class GoodsReceiptGenerator(TransactionGenerator):
         )
         gl_entries.append({
             "account": ap_accrual_account,
-            "debit": str(Decimal("0")),
-            "credit": str(total_debit),
+            "debit_amount": str(Decimal("0")),
+            "credit_amount": str(total_debit),
             "description": (
                 f"AP Accrual (GRNI) — {receipt_header.receipt_number} "
                 f"(Vendor: {receipt_header.vendor_name})"

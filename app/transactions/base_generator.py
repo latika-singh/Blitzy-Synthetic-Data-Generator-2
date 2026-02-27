@@ -610,6 +610,45 @@ class TransactionGenerator(ABC):
             )
             return (False, None, None)
 
+    @staticmethod
+    def _normalize_gl_entry_keys(
+        entries: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Normalize GL entry dict keys to match GLPostingEngine's JournalEntryLine model.
+
+        The ``GLPostingEngine`` expects ``debit_amount`` / ``credit_amount``
+        keys on each line dict (matching the ``JournalEntryLine`` Pydantic
+        model).  Some generators may produce ``debit`` / ``credit`` keys
+        instead.  This helper transparently maps legacy keys to their
+        canonical form so that *all* generators integrate seamlessly with
+        the GL engine regardless of which key style they use internally.
+
+        Mapping rules (applied per-entry):
+            * ``debit``  → ``debit_amount``  (only when ``debit_amount`` is absent)
+            * ``credit`` → ``credit_amount`` (only when ``credit_amount`` is absent)
+
+        The original ``debit`` / ``credit`` keys are removed after mapping
+        to prevent ambiguity downstream.
+
+        Args:
+            entries: Raw GL entry dicts from any transaction generator.
+
+        Returns:
+            A *new* list of dicts with canonicalized ``debit_amount`` /
+            ``credit_amount`` keys.  The original list is not mutated.
+        """
+        normalized: List[Dict[str, Any]] = []
+        for entry in entries:
+            norm = dict(entry)
+            # Map 'debit' → 'debit_amount' when canonical key is absent
+            if "debit_amount" not in norm and "debit" in norm:
+                norm["debit_amount"] = norm.pop("debit")
+            # Map 'credit' → 'credit_amount' when canonical key is absent
+            if "credit_amount" not in norm and "credit" in norm:
+                norm["credit_amount"] = norm.pop("credit")
+            normalized.append(norm)
+        return normalized
+
     async def _delegate_gl_posting(
         self,
         journal_entries: List[Dict[str, Any]],
@@ -626,10 +665,16 @@ class TransactionGenerator(ABC):
         If no ``GLPostingEngine`` was injected, a warning is logged and
         the method returns without error.
 
+        Before delegating, all GL entry dicts are passed through
+        :meth:`_normalize_gl_entry_keys` to ensure ``debit_amount`` /
+        ``credit_amount`` keys match the ``JournalEntryLine`` model
+        expected by the ``GLPostingEngine``.
+
         Args:
             journal_entries: List of journal entry specification dicts to
-                post.  Each dict should contain at minimum ``account``,
-                ``debit``, and ``credit`` keys.
+                post.  Each dict should contain ``account`` and either
+                ``debit_amount``/``credit_amount`` or ``debit``/``credit``
+                keys (both are accepted; the latter are normalized).
             context: The current :class:`GenerationContext` for simulation
                 scoping and trace correlation.
 
@@ -657,10 +702,15 @@ class TransactionGenerator(ABC):
             )
             return
 
+        # Normalize legacy 'debit'/'credit' keys to 'debit_amount'/'credit_amount'
+        # so that all generators integrate cleanly with GLPostingEngine's
+        # JournalEntryLine Pydantic model (which expects debit_amount/credit_amount).
+        normalized_entries = self._normalize_gl_entry_keys(journal_entries)
+
         try:
             # GLPostingEngine.post_entries is expected to be an async method
             await self._gl_posting_engine.post_entries(
-                journal_entries=journal_entries,
+                journal_entries=normalized_entries,
                 context=context,
             )
             logger.debug(

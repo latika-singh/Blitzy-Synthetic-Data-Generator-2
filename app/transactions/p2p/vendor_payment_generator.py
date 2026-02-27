@@ -759,8 +759,8 @@ class VendorPaymentGenerator(TransactionGenerator):
             total_debits = Decimal("0")
             total_credits = Decimal("0")
             for entry in gl_entries:
-                total_debits += Decimal(str(entry.get("debit", "0")))
-                total_credits += Decimal(str(entry.get("credit", "0")))
+                total_debits += Decimal(str(entry.get("debit_amount", entry.get("debit", "0"))))
+                total_credits += Decimal(str(entry.get("credit_amount", entry.get("credit", "0"))))
 
             imbalance = abs(total_debits - total_credits)
             if imbalance > GL_BALANCE_TOLERANCE:
@@ -832,8 +832,8 @@ class VendorPaymentGenerator(TransactionGenerator):
         total_debits = Decimal("0")
         total_credits = Decimal("0")
         for entry in gl_entries:
-            total_debits += Decimal(str(entry.get("debit", "0")))
-            total_credits += Decimal(str(entry.get("credit", "0")))
+            total_debits += Decimal(str(entry.get("debit_amount", entry.get("debit", "0"))))
+            total_credits += Decimal(str(entry.get("credit_amount", entry.get("credit", "0"))))
 
         imbalance = abs(total_debits - total_credits)
         if imbalance > GL_BALANCE_TOLERANCE:
@@ -1021,8 +1021,8 @@ class VendorPaymentGenerator(TransactionGenerator):
         entries.append({
             "account": _GL_ACCOUNTS["accounts_payable"],
             "account_name": "Accounts Payable",
-            "debit": str(gross_amount),
-            "credit": str(Decimal("0")),
+            "debit_amount": str(gross_amount),
+            "credit_amount": str(Decimal("0")),
             "description": "Vendor payment — reduce AP liability",
             "payment_id": str(payment_id),
             "fiscal_period": context.fiscal_period,
@@ -1033,21 +1033,24 @@ class VendorPaymentGenerator(TransactionGenerator):
         entries.append({
             "account": _GL_ACCOUNTS["cash"],
             "account_name": "Cash",
-            "debit": str(Decimal("0")),
-            "credit": str(net_amount),
+            "debit_amount": str(Decimal("0")),
+            "credit_amount": str(net_amount),
             "description": "Vendor payment — cash disbursement",
             "payment_id": str(payment_id),
             "fiscal_period": context.fiscal_period,
             "posting_date": str(context.current_date),
         })
 
-        # CR Purchase Discount (if applicable)
+        # CR Purchase Discount (if applicable — accounting convention:
+        # purchase discounts reduce the cost of goods, recorded as a credit
+        # to the Purchase Discount contra-AP account; the GL entry balances
+        # as DR AP = CR Cash + CR Purchase Discount).
         if discount_amount > Decimal("0"):
             entries.append({
                 "account": _GL_ACCOUNTS["purchase_discount"],
                 "account_name": "Purchase Discount",
-                "debit": str(Decimal("0")),
-                "credit": str(discount_amount),
+                "debit_amount": str(Decimal("0")),
+                "credit_amount": str(discount_amount),
                 "description": "Vendor payment — early payment discount",
                 "payment_id": str(payment_id),
                 "fiscal_period": context.fiscal_period,
@@ -1058,8 +1061,8 @@ class VendorPaymentGenerator(TransactionGenerator):
         total_debits = Decimal("0")
         total_credits = Decimal("0")
         for entry in entries:
-            total_debits += Decimal(str(entry["debit"]))
-            total_credits += Decimal(str(entry["credit"]))
+            total_debits += Decimal(str(entry["debit_amount"]))
+            total_credits += Decimal(str(entry["credit_amount"]))
 
         imbalance = abs(total_debits - total_credits)
         if imbalance > GL_BALANCE_TOLERANCE:

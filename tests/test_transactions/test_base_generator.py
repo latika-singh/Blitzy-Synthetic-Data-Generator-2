@@ -867,19 +867,31 @@ class TestGLPostingDelegation:
     async def test_delegate_gl_posting_passes_journal_entries(
         self, sample_context
     ):
-        """The actual journal_entries list is passed to the engine."""
+        """The actual journal_entries list is passed to the engine.
+
+        The base_generator normalizes GL entry dict keys so that legacy
+        ``debit``/``credit`` keys are mapped to the canonical
+        ``debit_amount``/``credit_amount`` keys expected by the
+        ``GLPostingEngine``'s ``JournalEntryLine`` Pydantic model.
+        """
         mock_engine = AsyncMock()
         mock_engine.post_entries = AsyncMock(return_value=None)
         gen = ConcreteGenerator(gl_posting_engine=mock_engine)
 
+        # Input entries use legacy 'debit'/'credit' keys
         entries = [
             {"account": "6100-00", "debit": Decimal("500.00"), "credit": Decimal("0.00")},
             {"account": "2100-00", "debit": Decimal("0.00"), "credit": Decimal("500.00")},
         ]
         await gen._delegate_gl_posting(journal_entries=entries, context=sample_context)
 
+        # After normalization, the GL engine receives canonical keys
+        expected_normalized = [
+            {"account": "6100-00", "debit_amount": Decimal("500.00"), "credit_amount": Decimal("0.00")},
+            {"account": "2100-00", "debit_amount": Decimal("0.00"), "credit_amount": Decimal("500.00")},
+        ]
         call_kwargs = mock_engine.post_entries.call_args
-        assert call_kwargs.kwargs["journal_entries"] == entries
+        assert call_kwargs.kwargs["journal_entries"] == expected_normalized
         assert call_kwargs.kwargs["context"] is sample_context
 
     @pytest.mark.asyncio

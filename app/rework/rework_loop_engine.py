@@ -922,6 +922,13 @@ class ReworkLoopEngine:
             if success:
                 break
 
+            # Linear backoff between retry attempts (AAP §0.1.2:
+            # rework_loop_fix — Linear 1s, 2s, 3s).  The delay equals the
+            # attempt number: 1s after attempt 1, 2s after attempt 2, etc.
+            # Only sleep if there are remaining attempts to avoid wasted time.
+            if attempt_num < self._max_attempts:
+                await asyncio.sleep(attempt_num)
+
         # Step 12: After loop — if not resolved, escalate
         if not result.resolved and not result.escalated:
             result.escalated = True

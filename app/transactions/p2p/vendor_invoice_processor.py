@@ -773,8 +773,8 @@ class VendorInvoiceProcessor(TransactionGenerator):
             total_debits = _ZERO
             total_credits = _ZERO
             for entry in gl_entries:
-                total_debits += Decimal(str(entry.get("debit", "0")))
-                total_credits += Decimal(str(entry.get("credit", "0")))
+                total_debits += Decimal(str(entry.get("debit_amount", entry.get("debit", "0"))))
+                total_credits += Decimal(str(entry.get("credit_amount", entry.get("credit", "0"))))
 
             imbalance = abs(total_debits - total_credits)
             if imbalance > _GL_BALANCE_TOLERANCE:
@@ -829,8 +829,8 @@ class VendorInvoiceProcessor(TransactionGenerator):
         total_debits = _ZERO
         total_credits = _ZERO
         for entry in result.gl_entries:
-            total_debits += Decimal(str(entry.get("debit", "0")))
-            total_credits += Decimal(str(entry.get("credit", "0")))
+            total_debits += Decimal(str(entry.get("debit_amount", entry.get("debit", "0"))))
+            total_credits += Decimal(str(entry.get("credit_amount", entry.get("credit", "0"))))
 
         imbalance = abs(total_debits - total_credits)
         if imbalance > _GL_BALANCE_TOLERANCE:
@@ -1076,8 +1076,8 @@ class VendorInvoiceProcessor(TransactionGenerator):
 
             gl_entry = {
                 "account": gl_account,
-                "debit": str(debit_amount),
-                "credit": str(_ZERO),
+                "debit_amount": str(debit_amount),
+                "credit_amount": str(_ZERO),
                 "description": (
                     f"Vendor invoice {invoice_header.invoice_number} "
                     f"line {line.line_number}: {line.description}"
@@ -1097,8 +1097,8 @@ class VendorInvoiceProcessor(TransactionGenerator):
         credit_amount = invoice_header.total_amount
         ap_entry = {
             "account": _AP_CONTROL_ACCOUNT,
-            "debit": str(_ZERO),
-            "credit": str(credit_amount),
+            "debit_amount": str(_ZERO),
+            "credit_amount": str(credit_amount),
             "description": (
                 f"Vendor invoice {invoice_header.invoice_number} "
                 f"AP for vendor {invoice_header.vendor_name}"

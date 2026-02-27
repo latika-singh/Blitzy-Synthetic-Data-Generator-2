@@ -82,6 +82,17 @@ from app.discrepancies.control.backdated_transaction import BackdatedTransaction
 from app.discrepancies.control.holiday_transaction import HolidayTransaction
 
 # ---------------------------------------------------------------------------
+# Programmatic type-code → class mapping (consistent with P2P and O2C packages)
+# ---------------------------------------------------------------------------
+CONTROL_DISCREPANCY_CLASSES: dict[str, type] = {
+    "CTL-001": SoDViolation,
+    "CTL-002": SelfApproval,
+    "CTL-003": ApprovalLimitExceeded,
+    "CTL-004": BackdatedTransaction,
+    "CTL-005": HolidayTransaction,
+}
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 __all__: list[str] = [
@@ -90,4 +101,5 @@ __all__: list[str] = [
     "ApprovalLimitExceeded",
     "BackdatedTransaction",
     "HolidayTransaction",
+    "CONTROL_DISCREPANCY_CLASSES",
 ]
