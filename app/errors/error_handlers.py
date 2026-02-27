@@ -9,6 +9,10 @@ of the platform:
   retry, skip, and escalation based on error type and retry budget.
 * **WorkflowErrorHandler** — Workflow lifecycle errors with retry
   queueing and failure notification.
+* **TransactionErrorHandler** — Handles Project 3 transaction processing
+  errors with operation-specific retry policies (8 operations), circuit
+  breaker patterns (3 domains), and structured fallback behaviors per
+  AAP Section 0.7.4.
 
 Additionally defines two custom exception types consumed by the
 ``AgentErrorHandler``:
@@ -32,6 +36,12 @@ Design Decisions
   prevent credential leakage (AAP Section 0.7.4).
 - Constructor injection is used for ``WorkflowErrorHandler`` dependencies
   per AAP Section 0.7.1.
+- ``TransactionErrorHandler`` implements circuit breakers with three states
+  (CLOSED, OPEN, HALF_OPEN) tracked per-domain. Failure thresholds and
+  recovery timeouts are sourced from ``app.transactions.constants``.
+- P3 exception imports use a guarded ``try/except ImportError`` pattern
+  (like the Anthropic SDK guard) so the module stays importable when P3
+  modules are not installed yet.
 
 References
 ----------
@@ -46,7 +56,9 @@ References
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import structlog
@@ -63,6 +75,28 @@ try:
     _ANTHROPIC_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _ANTHROPIC_AVAILABLE = False
+
+# ---------------------------------------------------------------------------
+# Safe import of P3 transaction exception types.  When the transaction
+# modules are not yet installed (e.g. during initial P2 testing), the handler
+# falls back to catching the generic Exception type.
+# ---------------------------------------------------------------------------
+try:
+    from app.transactions.exceptions import (
+        BalanceError,
+        ConcurrencyError,
+        DiscrepancyInjectionError,
+        GLPostingError,
+        PaymentAllocationError,
+        PeriodClosedError,
+        ReworkLoopError,
+        ThreeWayMatchError,
+        TransactionError,
+        TransactionGenerationError,
+    )
+    _P3_EXCEPTIONS_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _P3_EXCEPTIONS_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # TYPE_CHECKING-only imports — prevents circular runtime dependencies with
@@ -530,6 +564,429 @@ class WorkflowErrorHandler:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Circuit Breaker — P3 Transaction Error Domains
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class CircuitBreakerState(Enum):
+    """Circuit breaker states for P3 transaction error domains."""
+
+    CLOSED = "closed"       # Normal operation — requests pass through
+    OPEN = "open"           # Failures exceeded threshold — requests blocked
+    HALF_OPEN = "half_open"  # Recovery timeout elapsed — allowing test request
+
+
+class CircuitBreaker:
+    """Simple circuit breaker implementation for transaction error domains.
+
+    Tracks failure counts and transitions between CLOSED, OPEN, and HALF_OPEN
+    states based on configured thresholds and recovery timeouts.
+
+    Three circuit breakers are configured per AAP Section 0.1.2:
+    - GL posting: 10 failures → OPEN, 60s recovery
+    - Discrepancy injection: 20 failures → OPEN, 30s recovery
+    - Rework loop: 50 failures → OPEN, 120s recovery
+    """
+
+    def __init__(
+        self,
+        name: str,
+        failure_threshold: int,
+        recovery_timeout_seconds: float,
+    ) -> None:
+        self.name = name
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout_seconds = recovery_timeout_seconds
+        self._state = CircuitBreakerState.CLOSED
+        self._failure_count: int = 0
+        self._last_failure_time: float = 0.0
+
+    @property
+    def state(self) -> CircuitBreakerState:
+        """Current circuit breaker state, considering recovery timeout."""
+        if self._state == CircuitBreakerState.OPEN:
+            elapsed = time.monotonic() - self._last_failure_time
+            if elapsed >= self.recovery_timeout_seconds:
+                self._state = CircuitBreakerState.HALF_OPEN
+        return self._state
+
+    @property
+    def is_open(self) -> bool:
+        """True if the circuit is OPEN (blocking requests)."""
+        return self.state == CircuitBreakerState.OPEN
+
+    def record_success(self) -> None:
+        """Record a successful operation — reset failure count and close circuit."""
+        self._failure_count = 0
+        self._state = CircuitBreakerState.CLOSED
+        logger.debug(
+            "circuit_breaker_success",
+            breaker_name=self.name,
+            state=self._state.value,
+        )
+
+    def record_failure(self) -> None:
+        """Record a failed operation — increment count and potentially open circuit."""
+        self._failure_count += 1
+        self._last_failure_time = time.monotonic()
+        if self._failure_count >= self.failure_threshold:
+            self._state = CircuitBreakerState.OPEN
+            logger.warning(
+                "circuit_breaker_opened",
+                breaker_name=self.name,
+                failure_count=self._failure_count,
+                threshold=self.failure_threshold,
+                recovery_timeout_seconds=self.recovery_timeout_seconds,
+            )
+        else:
+            logger.debug(
+                "circuit_breaker_failure_recorded",
+                breaker_name=self.name,
+                failure_count=self._failure_count,
+                threshold=self.failure_threshold,
+            )
+
+    def reset(self) -> None:
+        """Reset the circuit breaker to initial CLOSED state."""
+        self._failure_count = 0
+        self._state = CircuitBreakerState.CLOSED
+        self._last_failure_time = 0.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TransactionErrorHandler — Project 3 Transaction Workflows
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TransactionErrorHandler:
+    """Handle Project 3 transaction processing errors with operation-specific
+    retry policies, circuit breaker patterns, and structured fallback behaviors.
+
+    Implements all 8 retry policies from AAP Section 0.1.2:
+
+    +--------------------------+--------+------------------+---------+------------------------------+
+    | Operation                | Retries| Backoff          | Timeout | Fallback                     |
+    +--------------------------+--------+------------------+---------+------------------------------+
+    | P2P cycle generation     | 2      | Linear (1s, 2s)  | 60s     | Skip transaction             |
+    | O2C cycle generation     | 2      | Linear (1s, 2s)  | 60s     | Skip transaction             |
+    | GL posting               | 3      | Exp (1s, 2s, 4s) | 30s     | Rollback transaction         |
+    | Three-way matching       | 2      | Linear (500ms,1s) | 10s     | Mark as exception            |
+    | Discrepancy injection    | 1      | None             | 5s      | Skip discrepancy             |
+    | Rework loop fix          | 3      | Linear (1,2,3s)  | 30s     | Escalate to admin            |
+    | Period close             | 1      | None             | 300s    | Halt, require manual interv. |
+    | Balance update           | 2      | Linear (500ms,1s) | 10s     | Rollback transaction         |
+    +--------------------------+--------+------------------+---------+------------------------------+
+
+    Implements 3 circuit breakers per AAP Section 0.1.2:
+    - GL posting: 10 failures → OPEN, 60s recovery
+    - Discrepancy injection: 20 failures → OPEN, 30s recovery
+    - Rework loop: 50 failures → OPEN, 120s recovery
+
+    Dependencies are injected via the constructor (AAP Section 0.7.1).
+    All parameters are Optional with None defaults.
+    """
+
+    def __init__(
+        self,
+        *,
+        monitoring: Any = None,
+    ) -> None:
+        """Initialise with injected dependencies.
+
+        Args:
+            monitoring: Optional monitoring/alerting instance with
+                ``alert_transaction_failed()`` method.
+        """
+        self.monitoring = monitoring
+
+        # Initialize circuit breakers per AAP Section 0.1.2
+        self._circuit_breakers: Dict[str, CircuitBreaker] = {
+            "gl_posting": CircuitBreaker(
+                name="gl_posting",
+                failure_threshold=10,
+                recovery_timeout_seconds=60.0,
+            ),
+            "discrepancy_injection": CircuitBreaker(
+                name="discrepancy_injection",
+                failure_threshold=20,
+                recovery_timeout_seconds=30.0,
+            ),
+            "rework_loop": CircuitBreaker(
+                name="rework_loop",
+                failure_threshold=50,
+                recovery_timeout_seconds=120.0,
+            ),
+        }
+
+        # Retry policies — matches AAP Section 0.1.2 Retry Policy Table EXACTLY
+        self._retry_policies: Dict[str, Dict[str, Any]] = {
+            "p2p_cycle_generation": {
+                "max_attempts": 2,
+                "backoff_strategy": "linear",
+                "backoff_seconds": [1.0, 2.0],
+                "timeout_seconds": 60.0,
+                "fallback": "skip_transaction",
+            },
+            "o2c_cycle_generation": {
+                "max_attempts": 2,
+                "backoff_strategy": "linear",
+                "backoff_seconds": [1.0, 2.0],
+                "timeout_seconds": 60.0,
+                "fallback": "skip_transaction",
+            },
+            "gl_posting": {
+                "max_attempts": 3,
+                "backoff_strategy": "exponential",
+                "backoff_seconds": [1.0, 2.0, 4.0],
+                "timeout_seconds": 30.0,
+                "fallback": "rollback_transaction",
+            },
+            "three_way_matching": {
+                "max_attempts": 2,
+                "backoff_strategy": "linear",
+                "backoff_seconds": [0.5, 1.0],
+                "timeout_seconds": 10.0,
+                "fallback": "mark_as_exception",
+            },
+            "discrepancy_injection": {
+                "max_attempts": 1,
+                "backoff_strategy": "none",
+                "backoff_seconds": [],
+                "timeout_seconds": 5.0,
+                "fallback": "skip_discrepancy",
+            },
+            "rework_loop_fix": {
+                "max_attempts": 3,
+                "backoff_strategy": "linear",
+                "backoff_seconds": [1.0, 2.0, 3.0],
+                "timeout_seconds": 30.0,
+                "fallback": "escalate_to_admin",
+            },
+            "period_close": {
+                "max_attempts": 1,
+                "backoff_strategy": "none",
+                "backoff_seconds": [],
+                "timeout_seconds": 300.0,
+                "fallback": "halt_manual_intervention",
+            },
+            "balance_update": {
+                "max_attempts": 2,
+                "backoff_strategy": "linear",
+                "backoff_seconds": [0.5, 1.0],
+                "timeout_seconds": 10.0,
+                "fallback": "rollback_transaction",
+            },
+        }
+
+    def get_circuit_breaker(self, domain: str) -> Optional[CircuitBreaker]:
+        """Get the circuit breaker for a given domain.
+
+        Args:
+            domain: One of 'gl_posting', 'discrepancy_injection', 'rework_loop'.
+
+        Returns:
+            The CircuitBreaker instance, or None if the domain has no circuit
+            breaker.
+        """
+        return self._circuit_breakers.get(domain)
+
+    def get_retry_policy(self, operation: str) -> Dict[str, Any]:
+        """Get the retry policy for a given operation.
+
+        Args:
+            operation: Operation name from the retry policy table.
+
+        Returns:
+            Dict with max_attempts, backoff_strategy, backoff_seconds,
+            timeout_seconds, and fallback keys.
+
+        Raises:
+            KeyError: If the operation is not in the retry policy table.
+        """
+        if operation not in self._retry_policies:
+            raise KeyError(
+                f"Unknown operation '{operation}'. "
+                f"Valid operations: {sorted(self._retry_policies.keys())}"
+            )
+        return self._retry_policies[operation]
+
+    async def handle_transaction_error(
+        self,
+        operation: str,
+        error: Exception,
+        *,
+        retry_count: int = 0,
+        trace_id: Optional[str] = None,
+        simulation_id: Optional[str] = None,
+        transaction_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Handle a transaction processing error and return the recommended action.
+
+        Args:
+            operation: One of the 8 operation types from the retry policy table:
+                'p2p_cycle_generation', 'o2c_cycle_generation', 'gl_posting',
+                'three_way_matching', 'discrepancy_injection', 'rework_loop_fix',
+                'period_close', 'balance_update'.
+            error: The exception that occurred.
+            retry_count: Number of retry attempts already made for this
+                operation.
+            trace_id: Distributed trace identifier for structured logging.
+            simulation_id: Simulation run identifier for structured logging.
+            transaction_id: Transaction identifier for structured logging.
+            context: Optional additional context dictionary (will be scrubbed).
+
+        Returns:
+            One of: 'retry', 'skip', 'rollback', 'mark_exception',
+            'escalate', 'halt'.
+        """
+        safe_ctx = _scrub_context(context or {})
+        policy = self._retry_policies.get(operation)
+
+        if policy is None:
+            logger.error(
+                "transaction_error_unknown_operation",
+                operation=operation,
+                error_type=type(error).__name__,
+                error_message=str(error),
+                trace_id=trace_id,
+                simulation_id=simulation_id,
+                service_name="transactions",
+                component="TransactionErrorHandler",
+            )
+            return "escalate"
+
+        # --- Step 1: Check circuit breaker for domains that have one ---
+        breaker = self._circuit_breakers.get(operation)
+        if breaker is not None and breaker.is_open:
+            logger.warning(
+                "transaction_error_circuit_open",
+                operation=operation,
+                breaker_name=breaker.name,
+                breaker_state=breaker.state.value,
+                fallback=policy["fallback"],
+                trace_id=trace_id,
+                simulation_id=simulation_id,
+                transaction_id=transaction_id,
+                service_name="transactions",
+                component="TransactionErrorHandler",
+            )
+            return self._fallback_to_action(policy["fallback"])
+
+        # --- Step 2: Structured error log (AAP Section 0.7.6/0.7.7) ---
+        logger.error(
+            "transaction_error",
+            operation=operation,
+            error_type=type(error).__name__,
+            error_message=str(error),
+            retry_count=retry_count,
+            max_attempts=policy["max_attempts"],
+            timeout_seconds=policy["timeout_seconds"],
+            fallback=policy["fallback"],
+            trace_id=trace_id,
+            simulation_id=simulation_id,
+            transaction_id=transaction_id,
+            context=safe_ctx,
+            service_name="transactions",
+            component="TransactionErrorHandler",
+            exc_info=True,
+        )
+
+        # --- Step 3: Record failure on circuit breaker if applicable ---
+        if breaker is not None:
+            breaker.record_failure()
+
+        # --- Step 4: Check if retry budget remains ---
+        if retry_count < policy["max_attempts"]:
+            # Compute backoff delay
+            backoff_seconds = policy["backoff_seconds"]
+            if backoff_seconds and retry_count < len(backoff_seconds):
+                delay = backoff_seconds[retry_count]
+            else:
+                delay = 0.0
+
+            if delay > 0:
+                logger.info(
+                    "transaction_error_retry_backoff",
+                    operation=operation,
+                    retry_count=retry_count,
+                    backoff_seconds=delay,
+                    trace_id=trace_id,
+                    simulation_id=simulation_id,
+                    transaction_id=transaction_id,
+                    service_name="transactions",
+                    component="TransactionErrorHandler",
+                )
+                await asyncio.sleep(delay)
+
+            return "retry"
+
+        # --- Step 5: Retry budget exhausted — apply fallback ---
+        logger.warning(
+            "transaction_error_retries_exhausted",
+            operation=operation,
+            retry_count=retry_count,
+            fallback=policy["fallback"],
+            trace_id=trace_id,
+            simulation_id=simulation_id,
+            transaction_id=transaction_id,
+            service_name="transactions",
+            component="TransactionErrorHandler",
+        )
+
+        # Notify monitoring if available
+        if self.monitoring is not None:
+            try:
+                await self.monitoring.alert_transaction_failed(
+                    operation=operation,
+                    error=error,
+                    trace_id=trace_id,
+                    simulation_id=simulation_id,
+                    transaction_id=transaction_id,
+                )
+            except Exception as alert_err:
+                logger.error(
+                    "transaction_error_alert_failed",
+                    operation=operation,
+                    alert_error=str(alert_err),
+                    trace_id=trace_id,
+                    simulation_id=simulation_id,
+                    service_name="transactions",
+                    component="TransactionErrorHandler",
+                )
+
+        return self._fallback_to_action(policy["fallback"])
+
+    @staticmethod
+    def _fallback_to_action(fallback: str) -> str:
+        """Convert a fallback policy name to a caller-actionable return string.
+
+        Mapping:
+            skip_transaction       → 'skip'
+            rollback_transaction   → 'rollback'
+            mark_as_exception      → 'mark_exception'
+            skip_discrepancy       → 'skip'
+            escalate_to_admin      → 'escalate'
+            halt_manual_intervention → 'halt'
+
+        Args:
+            fallback: Fallback policy string from the retry policy table.
+
+        Returns:
+            Normalized action string.
+        """
+        _FALLBACK_MAP: Dict[str, str] = {
+            "skip_transaction": "skip",
+            "rollback_transaction": "rollback",
+            "mark_as_exception": "mark_exception",
+            "skip_discrepancy": "skip",
+            "escalate_to_admin": "escalate",
+            "halt_manual_intervention": "halt",
+        }
+        return _FALLBACK_MAP.get(fallback, "escalate")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Module Exports
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -537,6 +994,9 @@ __all__ = [
     "LLMErrorHandler",
     "AgentErrorHandler",
     "WorkflowErrorHandler",
+    "TransactionErrorHandler",
+    "CircuitBreaker",
+    "CircuitBreakerState",
     "LLMError",
     "DatabaseError",
 ]

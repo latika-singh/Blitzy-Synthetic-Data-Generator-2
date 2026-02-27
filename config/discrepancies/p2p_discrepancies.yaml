@@ -1,0 +1,407 @@
+# =============================================================================
+# P2P Discrepancy Type Definitions
+# =============================================================================
+#
+# Purpose:
+#   Defines all 15 Procure-to-Pay (P2P) discrepancy types for the Discrepancy
+#   Injection System. Each type specifies its code, name, category, difficulty
+#   level, base injection rate, parameter bounds, and human-readable description.
+#
+# Consuming modules:
+#   - app/discrepancies/discrepancy_catalog.py   (DiscrepancyCatalog)
+#   - app/discrepancies/discrepancy_injector.py  (DiscrepancyInjector)
+#   - app/discrepancies/ground_truth_generator.py (GroundTruthGenerator)
+#
+# Implementation modules (one per type):
+#   - app/discrepancies/p2p/duplicate_invoice.py         (P2P-001)
+#   - app/discrepancies/p2p/price_mismatch.py            (P2P-002)
+#   - app/discrepancies/p2p/quantity_variance.py          (P2P-003)
+#   - app/discrepancies/p2p/missing_po.py                 (P2P-004)
+#   - app/discrepancies/p2p/po_not_approved.py            (P2P-005)
+#   - app/discrepancies/p2p/invoice_before_receipt.py     (P2P-006)
+#   - app/discrepancies/p2p/round_dollar_invoice.py       (P2P-007)
+#   - app/discrepancies/p2p/weekend_processing.py         (P2P-008)
+#   - app/discrepancies/p2p/duplicate_payment.py          (P2P-009)
+#   - app/discrepancies/p2p/payment_before_invoice.py     (P2P-010)
+#   - app/discrepancies/p2p/unapproved_vendor.py          (P2P-011)
+#   - app/discrepancies/p2p/split_po.py                   (P2P-012)
+#   - app/discrepancies/p2p/fictitious_vendor.py          (P2P-013)
+#   - app/discrepancies/p2p/vendor_concentration.py       (P2P-014)
+#   - app/discrepancies/p2p/ghost_expense.py              (P2P-015)
+#
+# Specification reference: AAP Section 0.2.2, Section 0.5.1 Group 5 & Group 7
+#
+# Schema per type:
+#   code (str)            — Unique type code (P2P-NNN)
+#   name (str)            — Human-readable discrepancy name
+#   category (str)        — Always "p2p" for this file
+#   difficulty (str)      — "easy" or "medium" (no "hard" in MVP — hard: 0.00)
+#   base_rate (float)     — Base injection probability [0.0–1.0]
+#   parameter_bounds (map)— Min/max pairs for each configurable parameter
+#   description (str)     — Detailed explanation of the discrepancy
+#   detection_method (str)— How this discrepancy is typically detected
+#
+# Constraints:
+#   - No "hard" difficulty discrepancies in MVP (hard: 0.00 per AAP Section 0.1.2)
+#   - All parameter_bounds MUST have both min and max values
+#   - base_rate values represent relative injection probability within the P2P
+#     category; actual injection is controlled by discrepancy_rates.yaml
+#   - Difficulty distribution: easy (70%), medium (30%) per AAP Section 0.7.5
+#
+# IMPORTANT: Do NOT add hard-difficulty discrepancies for MVP.
+# =============================================================================
+
+discrepancy_types:
+
+  # ---------------------------------------------------------------------------
+  # P2P-001: Duplicate Invoice
+  # ---------------------------------------------------------------------------
+  # Most common P2P discrepancy. Generates an exact or near-duplicate vendor
+  # invoice — same vendor with matching or similar invoice number, date
+  # proximity, and similar amount. Detected through invoice number and
+  # amount matching algorithms.
+  # Implementation: app/discrepancies/p2p/duplicate_invoice.py
+  # ---------------------------------------------------------------------------
+  - code: "P2P-001"
+    name: "Duplicate Invoice"
+    category: "p2p"
+    difficulty: "easy"
+    base_rate: 0.15                      # Most common P2P discrepancy
+    detection_method: "invoice_matching"
+    description: "Exact or near-duplicate vendor invoice — same vendor with matching or similar invoice number, date proximity, and similar amount"
+    parameter_bounds:
+      days_apart:                        # How many days apart duplicates can be
+        min: 1
+        max: 90
+      amount_variation_pct:              # Max 5% amount variation for near-duplicates
+        min: 0.0
+        max: 0.05
+      number_variation:                  # How many characters can differ in invoice number
+        min: 0
+        max: 3
+
+  # ---------------------------------------------------------------------------
+  # P2P-002: Invoice/PO Price Mismatch
+  # ---------------------------------------------------------------------------
+  # Vendor invoice unit price differs from purchase order price by more than
+  # the standard ±5% tolerance. Detected during three-way matching between
+  # the purchase order, goods receipt, and vendor invoice.
+  # Implementation: app/discrepancies/p2p/price_mismatch.py
+  # ---------------------------------------------------------------------------
+  - code: "P2P-002"
+    name: "Invoice/PO Price Mismatch"
+    category: "p2p"
+    difficulty: "easy"
+    base_rate: 0.12                      # Second most common P2P discrepancy
+    detection_method: "three_way_matching"
+    description: "Vendor invoice unit price differs from purchase order price by more than the standard ±5% tolerance"
+    parameter_bounds:
+      price_variance_pct:                # Variance range 1%–50%
+        min: 0.01
+        max: 0.50
+      affect_all_lines:                  # Whether all lines or just some are affected
+        min: false
+        max: true
+
+  # ---------------------------------------------------------------------------
+  # P2P-003: Invoice/Receipt Quantity Variance
+  # ---------------------------------------------------------------------------
+  # Vendor invoice quantity differs from goods receipt quantity by more than
+  # the standard ±2% tolerance. Detected during three-way matching between
+  # the purchase order, goods receipt, and vendor invoice.
+  # Implementation: app/discrepancies/p2p/quantity_variance.py
+  # ---------------------------------------------------------------------------
+  - code: "P2P-003"
+    name: "Invoice/Receipt Quantity Variance"
+    category: "p2p"
+    difficulty: "easy"
+    base_rate: 0.10                      # Third most common P2P discrepancy
+    detection_method: "three_way_matching"
+    description: "Vendor invoice quantity differs from goods receipt quantity by more than the standard ±2% tolerance"
+    parameter_bounds:
+      quantity_variance_pct:             # Variance range 1%–30%
+        min: 0.01
+        max: 0.30
+      affect_all_lines:                  # Whether all lines or just some are affected
+        min: false
+        max: true
+
+  # ---------------------------------------------------------------------------
+  # P2P-004: Missing Purchase Order
+  # ---------------------------------------------------------------------------
+  # Vendor invoice submitted without a corresponding purchase order reference.
+  # Indicates maverick spending — procurement bypassing the standard PO
+  # process. Detected by checking document linkage between invoice and PO.
+  # Implementation: app/discrepancies/p2p/missing_po.py
+  # ---------------------------------------------------------------------------
+  - code: "P2P-004"
+    name: "Missing Purchase Order"
+    category: "p2p"
+    difficulty: "easy"
+    base_rate: 0.08                      # Common in organizations with weak PO enforcement
+    detection_method: "document_linkage"
+    description: "Vendor invoice submitted without a corresponding purchase order reference — maverick spending indicator"
+    parameter_bounds:
+      remove_po_reference:               # Always remove PO ref (must have min/max)
+        min: true
+        max: true
+
+  # ---------------------------------------------------------------------------
+  # P2P-005: PO Not Approved
+  # ---------------------------------------------------------------------------
+  # Purchase order bypassed required approval workflow or was approved by an
+  # approver with insufficient authority level. Requires tracing the approval
+  # chain against the configured thresholds in approval_thresholds.yaml.
+  # Implementation: app/discrepancies/p2p/po_not_approved.py
+  # ---------------------------------------------------------------------------
+  - code: "P2P-005"
+    name: "PO Not Approved"
+    category: "p2p"
+    difficulty: "medium"
+    base_rate: 0.06                      # Medium difficulty — requires approval chain analysis
+    detection_method: "approval_audit"
+    description: "Purchase order bypassed required approval workflow or was approved by an approver with insufficient authority level"
+    parameter_bounds:
+      bypass_type:                       # String enum of bypass scenarios
+        min: "skip_approval"
+        max: "insufficient_level"
+      approval_level_gap:                # How many levels short of required approval
+        min: 1
+        max: 3
+
+  # ---------------------------------------------------------------------------
+  # P2P-006: Invoice Before Receipt
+  # ---------------------------------------------------------------------------
+  # Vendor invoice date is earlier than the corresponding goods receipt date.
+  # Temporal sequence violation — goods should be received before the vendor
+  # invoice is accepted for processing.
+  # Implementation: app/discrepancies/p2p/invoice_before_receipt.py
+  # ---------------------------------------------------------------------------
+  - code: "P2P-006"
+    name: "Invoice Before Receipt"
+    category: "p2p"
+    difficulty: "easy"
+    base_rate: 0.07                      # Common timing discrepancy
+    detection_method: "date_sequence"
+    description: "Vendor invoice date is earlier than the corresponding goods receipt date — temporal sequence violation"
+    parameter_bounds:
+      days_before_receipt:               # How many days before receipt the invoice is dated
+        min: 1
+        max: 30
+
+  # ---------------------------------------------------------------------------
+  # P2P-007: Round-Dollar Invoice
+  # ---------------------------------------------------------------------------
+  # Vendor invoice total is an exact round dollar amount (e.g., $5,000.00,
+  # $10,000.00). Round amounts are statistically uncommon in legitimate
+  # transactions and are a well-known fraud indicator.
+  # Implementation: app/discrepancies/p2p/round_dollar_invoice.py
+  # ---------------------------------------------------------------------------
+  - code: "P2P-007"
+    name: "Round-Dollar Invoice"
+    category: "p2p"
+    difficulty: "easy"
+    base_rate: 0.05                      # Fraud indicator — exact round amounts
+    detection_method: "amount_analysis"
+    description: "Vendor invoice total is an exact round dollar amount (e.g., $5,000.00, $10,000.00) — common fraud indicator"
+    parameter_bounds:
+      round_to:                          # Rounding level (nearest $100, $1000, $10000)
+        min: 100
+        max: 10000
+
+  # ---------------------------------------------------------------------------
+  # P2P-008: Weekend Processing
+  # ---------------------------------------------------------------------------
+  # Transaction processed on a Saturday or Sunday. Unusual timing that may
+  # indicate unauthorized activity, as normal business operations occur on
+  # weekdays (per BusinessCalendar: 08:00–17:00, Mon–Fri).
+  # Implementation: app/discrepancies/p2p/weekend_processing.py
+  # ---------------------------------------------------------------------------
+  - code: "P2P-008"
+    name: "Weekend Processing"
+    category: "p2p"
+    difficulty: "easy"
+    base_rate: 0.04                      # Timing anomaly indicator
+    detection_method: "timing_analysis"
+    description: "Transaction processed on a Saturday or Sunday — unusual timing that may indicate unauthorized activity"
+    parameter_bounds:
+      day_type:                          # Which weekend day
+        min: "saturday"
+        max: "sunday"
+
+  # ---------------------------------------------------------------------------
+  # P2P-009: Duplicate Payment
+  # ---------------------------------------------------------------------------
+  # Same vendor paid twice for the same invoice or same amount within the
+  # same period. More complex than duplicate invoice as it requires analyzing
+  # payment records and matching by vendor, amount, and time window.
+  # Implementation: app/discrepancies/p2p/duplicate_payment.py
+  # ---------------------------------------------------------------------------
+  - code: "P2P-009"
+    name: "Duplicate Payment"
+    category: "p2p"
+    difficulty: "medium"
+    base_rate: 0.06                      # Medium difficulty — requires payment matching
+    detection_method: "payment_matching"
+    description: "Same vendor paid twice for the same invoice or same amount within the same period"
+    parameter_bounds:
+      days_apart:                        # How many days apart duplicate payments can occur
+        min: 1
+        max: 60
+      amount_variation_pct:              # Max 2% variation to still count as duplicate
+        min: 0.0
+        max: 0.02
+
+  # ---------------------------------------------------------------------------
+  # P2P-010: Payment Before Invoice Date
+  # ---------------------------------------------------------------------------
+  # Vendor payment date is earlier than the invoice date. Temporal anomaly
+  # indicating potential fraud or processing error — a payment should not
+  # precede the invoice it is paying.
+  # Implementation: app/discrepancies/p2p/payment_before_invoice.py
+  # ---------------------------------------------------------------------------
+  - code: "P2P-010"
+    name: "Payment Before Invoice Date"
+    category: "p2p"
+    difficulty: "easy"
+    base_rate: 0.04                      # Temporal anomaly indicator
+    detection_method: "date_sequence"
+    description: "Vendor payment date is earlier than the invoice date — temporal anomaly indicating potential fraud or processing error"
+    parameter_bounds:
+      days_before_invoice:               # How many days before invoice the payment is dated
+        min: 1
+        max: 30
+
+  # ---------------------------------------------------------------------------
+  # P2P-011: Vendor Not in Approved List
+  # ---------------------------------------------------------------------------
+  # Purchase order or invoice references a vendor that is not in the approved
+  # vendor master list. The vendor may be inactive (previously approved but
+  # deactivated) or non-existent (never registered in the system).
+  # Implementation: app/discrepancies/p2p/unapproved_vendor.py
+  # ---------------------------------------------------------------------------
+  - code: "P2P-011"
+    name: "Vendor Not in Approved List"
+    category: "p2p"
+    difficulty: "medium"
+    base_rate: 0.05                      # Medium difficulty — requires vendor master validation
+    detection_method: "vendor_validation"
+    description: "Purchase order or invoice references a vendor that is not in the approved vendor master list"
+    parameter_bounds:
+      vendor_status:                     # Type of vendor issue
+        min: "inactive"
+        max: "non_existent"
+
+  # ---------------------------------------------------------------------------
+  # P2P-012: Split PO to Avoid Approval
+  # ---------------------------------------------------------------------------
+  # Multiple purchase orders to the same vendor for similar items within a
+  # short period, each below the approval threshold. Indicates deliberate
+  # splitting to circumvent approval controls defined in
+  # config/workflows/approval_thresholds.yaml ($5K/$25K/$100K tiers).
+  # Implementation: app/discrepancies/p2p/split_po.py
+  # ---------------------------------------------------------------------------
+  - code: "P2P-012"
+    name: "Split PO to Avoid Approval"
+    category: "p2p"
+    difficulty: "medium"
+    base_rate: 0.04                      # Medium difficulty — requires pattern analysis
+    detection_method: "pattern_analysis"
+    description: "Multiple purchase orders to the same vendor for similar items within a short period, each below the approval threshold — indicates deliberate splitting to avoid approval"
+    parameter_bounds:
+      num_split_pos:                     # Number of POs the amount is split across
+        min: 2
+        max: 5
+      days_window:                       # Window in days for the split POs
+        min: 1
+        max: 14
+      target_threshold:                  # Which approval threshold is being avoided ($5K/$25K/$100K)
+        min: 5000
+        max: 100000
+
+  # ---------------------------------------------------------------------------
+  # P2P-013: Fictitious Vendor
+  # ---------------------------------------------------------------------------
+  # Vendor address, phone number, or bank account matches an employee record.
+  # Strong indicator of a fictitious vendor scheme where an employee creates
+  # a fake vendor to divert company funds. Detected through entity
+  # cross-referencing between vendor master and employee records.
+  # Implementation: app/discrepancies/p2p/fictitious_vendor.py
+  # ---------------------------------------------------------------------------
+  - code: "P2P-013"
+    name: "Fictitious Vendor"
+    category: "p2p"
+    difficulty: "medium"
+    base_rate: 0.03                      # Less common but high-severity fraud indicator
+    detection_method: "entity_cross_reference"
+    description: "Vendor address, phone number, or bank account matches an employee record — indicator of a fictitious vendor scheme"
+    parameter_bounds:
+      match_field:                       # Which field matches employee data
+        min: "address"
+        max: "bank_account"
+      similarity_threshold:              # How closely fields must match (0.80=fuzzy, 1.00=exact)
+        min: 0.80
+        max: 1.00
+
+  # ---------------------------------------------------------------------------
+  # P2P-014: Unusual Vendor Concentration
+  # ---------------------------------------------------------------------------
+  # Disproportionate spend concentration with a single vendor, exceeding
+  # the expected Pareto distribution (80/20 rule from selection_models.py).
+  # May indicate favoritism, kickback scheme, or collusion between a
+  # purchasing agent and a preferred vendor.
+  # Implementation: app/discrepancies/p2p/vendor_concentration.py
+  # ---------------------------------------------------------------------------
+  - code: "P2P-014"
+    name: "Unusual Vendor Concentration"
+    category: "p2p"
+    difficulty: "medium"
+    base_rate: 0.03                      # Less common — requires spend analysis
+    detection_method: "spend_analysis"
+    description: "Disproportionate spend concentration with a single vendor, exceeding expected Pareto distribution — may indicate favoritism or kickback scheme"
+    parameter_bounds:
+      concentration_pct:                 # Percentage of category spend to one vendor (30%–80%)
+        min: 0.30
+        max: 0.80
+      lookback_periods:                  # Number of periods to analyze
+        min: 1
+        max: 6
+
+  # ---------------------------------------------------------------------------
+  # P2P-015: Ghost Expense
+  # ---------------------------------------------------------------------------
+  # Expense recorded without any supporting documentation — no PO, no
+  # receipt, no invoice. Potential fictitious expense where costs are booked
+  # without the standard procurement paper trail. Detected through
+  # documentation completeness audit.
+  # Implementation: app/discrepancies/p2p/ghost_expense.py
+  # ---------------------------------------------------------------------------
+  - code: "P2P-015"
+    name: "Ghost Expense"
+    category: "p2p"
+    difficulty: "medium"
+    base_rate: 0.03                      # Less common — requires documentation audit
+    detection_method: "documentation_audit"
+    description: "Expense recorded without any supporting documentation (no PO, no receipt, no invoice) — potential fictitious expense"
+    parameter_bounds:
+      missing_documents:                 # Number of missing supporting documents (1=PO, 2=PO+receipt, 3=all)
+        min: 1
+        max: 3
+
+# =============================================================================
+# Category Summary
+# =============================================================================
+# Aggregate counts for validation and reporting. The difficulty distribution
+# targets easy (70%) and medium (30%) per AAP Section 0.7.5.
+#
+# Easy types (8):   P2P-001, P2P-002, P2P-003, P2P-004, P2P-006, P2P-007,
+#                   P2P-008, P2P-010
+# Medium types (7): P2P-005, P2P-009, P2P-011, P2P-012, P2P-013, P2P-014,
+#                   P2P-015
+# Hard types (0):   None — hard: 0.00 per MVP constraint
+# =============================================================================
+category_summary:
+  total_types: 15                        # Total number of P2P discrepancy types
+  easy_count: 8                          # 8 easy-difficulty types (53% of P2P)
+  medium_count: 7                        # 7 medium-difficulty types (47% of P2P)
+  hard_count: 0                          # No hard types in MVP (hard: 0.00)

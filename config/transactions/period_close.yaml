@@ -1,0 +1,320 @@
+# =============================================================================
+# Period Close Configuration
+# =============================================================================
+#
+# Purpose:
+#   Defines the complete period-end close process for the General Ledger
+#   integration subsystem. Controls accrual generation, depreciation posting,
+#   recurring journal entries, sub-ledger reconciliation, and the strict
+#   10-step ordered close sequence.
+#
+# Consuming modules:
+#   - app/transactions/gl/period_close_manager.py  (PeriodCloseManager)
+#   - app/transactions/gl/accrual_generator.py     (AccrualGenerator)
+#
+# Specification reference: AAP Section 0.5.1 Group 4, Group 7
+#
+# Key constraints:
+#   - Accrual method is straight-line daily ONLY (Total / Days in Period)
+#   - Trial balance tolerance: $0.01 (Decimal("0.01"))
+#   - Balance sheet tolerance: $0.01 (Decimal("0.01"))
+#   - Period close is a strict 10-step ordered sequence — steps CANNOT be
+#     reordered or skipped
+#   - All financial calculations use Python Decimal with precision 28 and
+#     ROUND_HALF_UP rounding
+#
+# Account numbers reference Project 1's Chart of Accounts and the posting
+# rules defined in config/transactions/posting_rules.yaml.
+#
+# IMPORTANT: Do NOT alter tolerance values, step order, or accrual methods
+# without specification review.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Accrual Rules
+# -----------------------------------------------------------------------------
+# Controls automatic accrual generation during period close. Accruals are
+# journal entries that recognize revenues earned or expenses incurred but
+# not yet recorded in the normal transaction flow.
+#
+# Method: straight_line_daily = Total / Days in Period
+#   This is the ONLY supported accrual method for MVP. Do NOT use declining
+#   balance, sum-of-years-digits, or any other method.
+#   Source: AAP Section 0.1.2 ("Accrual Method: Straight-Line Daily")
+#
+# Auto-generated accruals are automatically reversed on the first day of the
+# next period to prevent double-counting when the actual transaction posts.
+# -----------------------------------------------------------------------------
+accrual_rules:
+  method: "straight_line_daily"          # Total / Days in Period — ONLY supported method
+  auto_generate: true                    # Automatically generate accruals during period close
+  reverse_on_period_open: true           # Reversing entries posted on first day of next period
+
+  # Two accrual categories: GRNI (AP side) and SNI (AR side)
+  categories:
+    # ----- Goods Received Not Invoiced (GRNI) -----
+    # Accrues expense/liability for goods physically received but for which
+    # the vendor invoice has not yet been recorded in the AP sub-ledger.
+    # Source: AAP Section 0.5.1 Group 4 (AccrualGenerator)
+    grni:
+      code: "GRNI"
+      description: "Goods received but vendor invoice not yet recorded"
+      debit_account: 6000                # General Expense (default; varies by PO line category)
+      debit_account_name: "General Expense"
+      credit_account: 2100               # AP Accrual
+      credit_account_name: "AP Accrual"
+      source_documents: "goods_receipts"  # Unmatched receipts without corresponding invoices
+
+    # ----- Shipped Not Invoiced (SNI) -----
+    # Accrues revenue/receivable for goods shipped to customers but for which
+    # the customer invoice has not yet been issued.
+    # Source: AAP Section 0.5.1 Group 4 (AccrualGenerator)
+    shipped_not_invoiced:
+      code: "SNI"
+      description: "Goods shipped to customer but invoice not yet issued"
+      debit_account: 1200                # Accounts Receivable
+      debit_account_name: "Accounts Receivable"
+      credit_account: 4000               # Revenue
+      credit_account_name: "Revenue"
+      source_documents: "shipments"       # Unmatched shipments without corresponding invoices
+
+# -----------------------------------------------------------------------------
+# Depreciation
+# -----------------------------------------------------------------------------
+# Controls monthly depreciation posting for fixed assets during period close.
+# Method: straight_line — only method supported for MVP.
+#
+# Monthly depreciation = (Cost - Salvage Value) / Useful Life in Months
+# Salvage value is expressed as a percentage of original cost.
+#
+# All depreciation entries debit Depreciation Expense and credit the
+# contra-asset Accumulated Depreciation account.
+# -----------------------------------------------------------------------------
+depreciation:
+  method: "straight_line"                # Only method supported for MVP
+  frequency: "monthly"                   # Depreciation entries posted monthly during period close
+  debit_account: 6100                    # Depreciation Expense
+  debit_account_name: "Depreciation Expense"
+  credit_account: 1350                   # Accumulated Depreciation (contra-asset)
+  credit_account_name: "Accumulated Depreciation"
+
+  # Fixed asset categories with useful life and salvage value parameters
+  asset_categories:
+    - name: "office_equipment"
+      useful_life_months: 60             # 5 years
+      salvage_value_pct: 0.10            # 10% of original cost
+
+    - name: "computer_equipment"
+      useful_life_months: 36             # 3 years
+      salvage_value_pct: 0.05            # 5% of original cost
+
+    - name: "furniture_fixtures"
+      useful_life_months: 84             # 7 years
+      salvage_value_pct: 0.10            # 10% of original cost
+
+    - name: "vehicles"
+      useful_life_months: 60             # 5 years
+      salvage_value_pct: 0.15            # 15% of original cost
+
+# -----------------------------------------------------------------------------
+# Recurring Journal Entries
+# -----------------------------------------------------------------------------
+# Template definitions for journal entries that are automatically posted
+# during every period close. Each template specifies the accounts, frequency,
+# and whether the amount is fixed or calculated at runtime.
+#
+# amount_type:
+#   "fixed"      — uses the dollar amount specified in the 'amount' field
+#   "calculated"  — amount is computed at runtime (e.g., 1/12 of annual premium)
+#                  'amount' is null for calculated entries
+# -----------------------------------------------------------------------------
+recurring_journal_entries:
+  templates:
+    # ----- Monthly Office Rent -----
+    - name: "rent_expense"
+      description: "Monthly office rent payment"
+      frequency: "monthly"
+      debit_account: 6200                # Rent Expense
+      debit_account_name: "Rent Expense"
+      credit_account: 1000               # Cash
+      credit_account_name: "Cash"
+      amount_type: "fixed"
+      amount: 5000                       # Fixed monthly rent ($5,000)
+
+    # ----- Monthly Insurance Expense Recognition -----
+    # Recognizes 1/12 of the annual insurance premium as monthly expense.
+    # Reduces the Prepaid Insurance asset and recognizes Insurance Expense.
+    - name: "insurance_expense"
+      description: "Monthly insurance expense recognition"
+      frequency: "monthly"
+      debit_account: 6300                # Insurance Expense
+      debit_account_name: "Insurance Expense"
+      credit_account: 1400               # Prepaid Insurance
+      credit_account_name: "Prepaid Insurance"
+      amount_type: "calculated"          # 1/12 of annual premium — computed at runtime
+      amount: null
+
+    # ----- Monthly Loan Interest Accrual -----
+    # Accrues interest expense on outstanding loans. Amount is calculated
+    # based on current loan balance and interest rate at runtime.
+    - name: "loan_interest"
+      description: "Monthly loan interest accrual"
+      frequency: "monthly"
+      debit_account: 6400                # Interest Expense
+      debit_account_name: "Interest Expense"
+      credit_account: 2200               # Interest Payable
+      credit_account_name: "Interest Payable"
+      amount_type: "calculated"          # Based on loan balance and rate — computed at runtime
+      amount: null
+
+# -----------------------------------------------------------------------------
+# Reconciliation Targets
+# -----------------------------------------------------------------------------
+# Defines the sub-ledger to GL control account mappings that must be
+# verified during period close. Each sub-ledger's total must reconcile
+# to its corresponding GL control account within the specified tolerance.
+#
+# Tolerance: $0.01 — per AAP Section 0.7.2 ("Sub-ledger Reconciliation:
+#   AR sub-ledger, AP sub-ledger, and Inventory sub-ledger MUST reconcile
+#   to their respective GL control accounts within $0.01 at all times.")
+# -----------------------------------------------------------------------------
+reconciliation_targets:
+  accounts_receivable:
+    subledger: "ar_subledger"
+    control_account: 1200                # Accounts Receivable
+    control_account_name: "Accounts Receivable"
+    tolerance: 0.01                      # Maximum allowable variance ($0.01)
+    description: "AR sub-ledger must reconcile to GL control account 1200"
+
+  accounts_payable:
+    subledger: "ap_subledger"
+    control_account: 2000                # Accounts Payable
+    control_account_name: "Accounts Payable"
+    tolerance: 0.01                      # Maximum allowable variance ($0.01)
+    description: "AP sub-ledger must reconcile to GL control account 2000"
+
+  inventory:
+    subledger: "inventory_subledger"
+    control_account: 1300                # Inventory
+    control_account_name: "Inventory"
+    tolerance: 0.01                      # Maximum allowable variance ($0.01)
+    description: "Inventory sub-ledger must reconcile to GL control account 1300"
+
+# -----------------------------------------------------------------------------
+# Close Steps — Strict 10-Step Ordered Sequence
+# -----------------------------------------------------------------------------
+# The period close process follows a strict 10-step ordered sequence.
+# Steps CANNOT be reordered or skipped — each step depends on the successful
+# completion of all preceding steps.
+#
+# Source: AAP Section 0.5.1 Group 4 (PeriodCloseManager — "10-step close
+#   process: validate all posted → generate accruals → generate deferrals →
+#   post depreciation → recurring JEs → account reconciliations → trial
+#   balance → validate financial statements → close period → open next period")
+#
+# rollback_on_failure:
+#   true  — if this step fails, rollback ALL prior steps and abort the close
+#   false — if this step fails, halt processing but do not rollback prior steps
+# -----------------------------------------------------------------------------
+close_steps:
+  - step: 1
+    name: "validate_all_posted"
+    description: "Verify all transactions for the period have been posted to the GL"
+    required: true
+    rollback_on_failure: false            # Nothing to rollback — this is a validation gate
+
+  - step: 2
+    name: "generate_accruals"
+    description: "Generate GRNI and shipped-not-invoiced accruals"
+    required: true
+    rollback_on_failure: true             # Rollback accrual entries on failure
+
+  - step: 3
+    name: "generate_deferrals"
+    description: "Generate deferral entries for prepaid expenses and unearned revenue"
+    required: true
+    rollback_on_failure: true             # Rollback deferral entries on failure
+
+  - step: 4
+    name: "post_depreciation"
+    description: "Post monthly depreciation entries for all fixed asset categories"
+    required: true
+    rollback_on_failure: true             # Rollback depreciation entries on failure
+
+  - step: 5
+    name: "post_recurring_jes"
+    description: "Post recurring journal entries from templates"
+    required: true
+    rollback_on_failure: true             # Rollback recurring JE entries on failure
+
+  - step: 6
+    name: "run_reconciliations"
+    description: "Reconcile AR, AP, and Inventory sub-ledgers to GL control accounts"
+    required: true
+    rollback_on_failure: true             # Rollback all prior close entries on reconciliation failure
+
+  - step: 7
+    name: "validate_trial_balance"
+    description: "Verify trial balance equals zero within tolerance"
+    required: true
+    rollback_on_failure: true             # Rollback all prior close entries on trial balance failure
+
+  - step: 8
+    name: "validate_financial_statements"
+    description: "Verify balance sheet equation (Assets = Liabilities + Equity) within tolerance"
+    required: true
+    rollback_on_failure: true             # Rollback all prior close entries on balance sheet failure
+
+  - step: 9
+    name: "close_period"
+    description: "Mark the fiscal period as CLOSED; prevent further postings"
+    required: true
+    rollback_on_failure: true             # Revert period status to OPEN on failure
+
+  - step: 10
+    name: "open_next_period"
+    description: "Mark the next fiscal period as OPEN for new postings"
+    required: true
+    rollback_on_failure: true             # Revert next period status on failure
+
+# -----------------------------------------------------------------------------
+# Tolerance Settings
+# -----------------------------------------------------------------------------
+# Financial tolerance values applied during period close validation steps.
+# All tolerances are expressed in US Dollars (absolute values).
+#
+# Source: AAP Section 0.7.2 ("Financial Integrity Rules")
+#   - GL Balance Invariant: $0.01 tolerance
+#   - Continuous Trial Balance: $0.01 tolerance
+#   - Balance Sheet Equation: $0.01 tolerance
+#   - Sub-ledger Reconciliation: $0.01 tolerance
+#
+# These values use Python Decimal with precision 28 and ROUND_HALF_UP.
+# Do NOT change these values without specification review.
+# -----------------------------------------------------------------------------
+tolerances:
+  trial_balance: 0.01                    # Maximum allowable trial balance imbalance ($0.01)
+  balance_sheet: 0.01                    # Maximum allowable balance sheet equation deviation ($0.01)
+  subledger_reconciliation: 0.01         # Maximum allowable sub-ledger to GL variance ($0.01)
+
+# -----------------------------------------------------------------------------
+# Error Handling
+# -----------------------------------------------------------------------------
+# Period close timeout, retry, and fallback behavior.
+#
+# Source: AAP Section 0.1.2 Retry Policy Table
+#   Operation: Period close
+#   Retry Attempts: 1
+#   Backoff Strategy: None
+#   Timeout: 300s
+#   Fallback: Halt, require manual intervention
+#
+# The period close operation does NOT retry automatically — a single failure
+# halts the process and requires manual intervention to investigate and
+# resolve the issue before re-attempting.
+# -----------------------------------------------------------------------------
+error_handling:
+  timeout_seconds: 300                   # Period close operation timeout (300 seconds = 5 minutes)
+  retry_attempts: 1                      # Single attempt — no automatic retry
+  fallback: "halt_require_manual_intervention"  # On failure: halt and require manual intervention
+  halt_on_reconciliation_failure: true   # Stop close process if sub-ledger reconciliation fails

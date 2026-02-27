@@ -1,9 +1,11 @@
-# PROJECT 2: AGENT & ORCHESTRATION ENGINE
-## Synthetic ERP Data Generation Platform - Phase 2
+# SYNTHETIC ERP DATA GENERATION PLATFORM
+## Project 2: Agent & Orchestration Engine | Project 3: Transaction Workflows & Discrepancies
 
 ---
 
-## 🎯 PROJECT OBJECTIVE
+## 🎯 PROJECT OBJECTIVES
+
+### Project 2 — Agent & Orchestration Engine
 
 **BUILD** an AI-powered agent and orchestration system that simulates realistic employee behavior using autonomous agents with memory, reflection, and LLM-powered decision-making, along with workflow orchestration, time management, and external world simulation components.
 
@@ -15,6 +17,84 @@
 5. Manage simulation time with business calendars and fiscal periods
 6. Generate transaction triggers using statistical models
 7. Coordinate all components through event-driven architecture
+
+### Project 3 — Transaction Workflows & Discrepancies
+
+**BUILD** a complete end-to-end transaction generation system that produces realistic Procure-to-Pay and Order-to-Cash cycles, posts balanced General Ledger entries, injects configurable discrepancies with ground truth labels, autonomously corrects unintentional errors via an intelligent rework loop, and manages fiscal period close processing.
+
+**DELIVERABLE:** A fully functional transaction workflow engine that can:
+1. Generate complete P2P cycles (Purchase Order → Goods Receipt → Vendor Invoice → Vendor Payment)
+2. Generate complete O2C cycles (Sales Order → Shipment → Customer Invoice → Customer Payment)
+3. Post balanced journal entries to the General Ledger (DR = CR within $0.01)
+4. Inject 35+ discrepancy types with full ground truth label generation
+5. Autonomously classify and correct validation failures (max 3 attempts per transaction)
+6. Execute 10-step fiscal period close with accruals, deferrals, depreciation, and trial balance validation
+7. Maintain continuous financial integrity (trial balance, sub-ledger reconciliation, balance sheet equation)
+
+---
+
+## 🚀 GETTING STARTED
+
+### Prerequisites
+
+- **Python 3.11+** (tested with 3.11.7 and 3.12.x)
+- **Redis** (optional — tests use `fakeredis`; required for production event persistence and agent state caching)
+- **PostgreSQL** (optional — tests use mocks/fixtures; required for production transaction persistence via Project 1's database layer)
+
+### Installation
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd <repository-directory>
+
+# Create and activate a virtual environment
+python3 -m venv venv
+source venv/bin/activate    # Linux/macOS
+# venv\Scripts\activate     # Windows
+
+# Install production dependencies
+pip install -r requirements.txt
+
+# Install development/test dependencies (includes production deps)
+pip install -r requirements-dev.txt
+```
+
+### Configuration
+
+```bash
+# Copy the environment template and configure
+cp .env.example .env
+
+# Edit .env with your settings (LLM API keys, Redis URL, etc.)
+# See the "New Environment Variables" section below for all Project 3 variables.
+```
+
+### Running Tests
+
+```bash
+# Run the full test suite
+python -m pytest tests/ -v --tb=short
+
+# Run only Project 3 transaction tests
+python -m pytest tests/test_transactions/ -v
+
+# Run only discrepancy injection tests
+python -m pytest tests/test_discrepancies/ -v
+
+# Run only rework loop tests
+python -m pytest tests/test_rework/ -v
+
+# Run with coverage report
+python -m pytest tests/ --cov=app --cov-report=term-missing
+```
+
+### Compilation Check
+
+```bash
+# Verify all source files compile without errors
+find app/ -name "*.py" -type f -exec python -m py_compile {} \;
+```
 
 ---
 
@@ -47,6 +127,42 @@
 18. **External Entity Response**: External entities generate responses within < 2 seconds
 19. **Statistical Model Performance**: Generate random samples ≥ 10,000/second
 20. **Month Generation Time**: Complete 1 month of simulation (2,000 txns) in 4-8 hours
+
+---
+
+## ✅ PROJECT 3 SUCCESS CRITERIA (24 Measurable Thresholds)
+
+### Transaction Generation Performance (6 criteria)
+1. **P2P Transaction Rate**: Generate ≥ 50 complete P2P cycles per minute
+2. **O2C Transaction Rate**: Generate ≥ 60 complete O2C cycles per minute
+3. **GL Posting Rate**: Post ≥ 200 journal entries per minute to the General Ledger
+4. **Transaction Completion Rate**: ≥ 99.5% of all transactions reach completed state
+5. **Concurrent Transactions**: Support ≥ 100 concurrent transaction workflows
+6. **Transaction Throughput**: Process ≥ 2,000 transactions/hour sustained
+
+### Discrepancy Injection (5 criteria)
+7. **Rate Control**: Actual injection rate within ±1% of the configured target rate (default 2%)
+8. **Difficulty Distribution**: Easy 70% / Medium 30% / Hard 0% with ±5% tolerance
+9. **Parameter Bounds**: All discrepancy parameters fall within configured bounds
+10. **Ground Truth Coverage**: 100% of injected discrepancies have a corresponding ground truth record
+11. **Transaction Linkage**: All ground truth records reference valid transaction IDs
+
+### Financial Integrity (6 criteria)
+12. **GL Balance**: SUM(debits) = SUM(credits) within $0.01 for every journal entry
+13. **Trial Balance**: Cumulative trial balance equals zero within $0.01 after every batch
+14. **Balance Sheet Equation**: Assets = Liabilities + Equity within $0.01 at all times
+15. **Sub-ledger Reconciliation**: AR, AP, and Inventory sub-ledgers match GL control accounts within $0.01
+16. **Atomicity**: Failed multi-step GL postings fully rollback — no partial postings permitted
+17. **Concurrent Posting**: Multiple agents post to the same GL account simultaneously with correct final balances
+
+### Workflow Integrity (7 criteria)
+18. **P2P Sequence**: PO → Receipt → Invoice → Payment — no out-of-order processing
+19. **O2C Sequence**: Order → Shipment → Invoice → Payment — strict ordering enforced
+20. **Approval Chains**: All transactions above configured thresholds require and receive approval
+21. **Three-Way Match**: Tolerances enforced — price ±5%, quantity ±2%
+22. **FIFO Allocation**: Customer payments allocated oldest invoice first
+23. **Rework Loop**: Maximum 3 fix attempts per transaction, 30-second timeout, then escalate
+24. **Period Close**: 10-step close process completes with trial balance at zero
 
 ---
 
@@ -2249,7 +2365,7 @@ synthetic_erp_platform/
 
 ## 📦 DELIVERABLES CHECKLIST
 
-### Code Deliverables
+### Project 2 Code Deliverables
 - [ ] Complete agent system with 12 specialized agent types
 - [ ] Agent memory system with observations and reflections
 - [ ] LLM client supporting Anthropic and OpenAI
@@ -2335,6 +2451,8 @@ synthetic_erp_platform/
 
 ## 📚 REFERENCE SPECIFICATIONS
 
+> **Note:** The following specification documents are external upstream design documents that informed the implementation of this project. They are **not included** in this repository — they reside in the project's design documentation system and are referenced here for traceability purposes only.
+
 This project implements specifications from:
 
 1. **AGENT_ARCHITECTURE.md** - Agent structure, roles, memory
@@ -2347,3 +2465,429 @@ This project implements specifications from:
 ---
 
 **END OF PROJECT 2 SPECIFICATION**
+
+---
+---
+
+# PROJECT 3: TRANSACTION WORKFLOWS & DISCREPANCIES
+## Synthetic ERP Data Generation Platform - Phase 3
+
+---
+
+## 🏗️ PROJECT 3 ARCHITECTURE
+
+Project 3 builds upon Project 2's agent and orchestration engine to generate realistic financial transactions with configurable discrepancies. It comprises six major subsystems, all integrated via constructor injection (ADR-003) and communicating through the existing EventBus (ADR-001).
+
+### 1. Procure-to-Pay (P2P) Engine
+
+A five-class pipeline generating complete P2P cycles:
+
+**Purchase Order → Goods Receipt → Vendor Invoice (with 3-way match) → Vendor Payment**
+
+| Generator Class | Responsibility |
+|----------------|---------------|
+| `PurchaseOrderGenerator` | Weighted vendor selection, EOQ-based quantity calculation, pricing, approval routing per thresholds (PO: $5K/$25K/$100K), sequential PO numbering (PO-YYYY-NNNN) |
+| `GoodsReceiptGenerator` | Receipt against open POs, lead time calculation, quantity variance handling, inventory balance update, GL posting (DR Inventory, CR AP Accrual) |
+| `VendorInvoiceProcessor` | Invoice creation, PO linkage, three-way match invocation, AP clerk routing via WorkflowOrchestrator, GL posting (DR Expense/Asset, CR AP) |
+| `ThreeWayMatcher` | PO/Receipt/Invoice matching with ±5% price tolerance and ±2% quantity tolerance, match status determination, variance calculation |
+| `VendorPaymentGenerator` | Payment grouping by vendor/terms, discount calculation, check/ACH/wire selection, GL posting (DR AP, CR Cash; DR Discount if applicable) |
+
+### 2. Order-to-Cash (O2C) Engine
+
+A four-class pipeline generating complete O2C cycles:
+
+**Sales Order → Shipment → Customer Invoice → Customer Payment**
+
+| Generator Class | Responsibility |
+|----------------|---------------|
+| `SalesOrderGenerator` | Revenue-weighted customer selection, credit limit check (credit_limit vs current_ar_balance), product selection, pricing with discounts, sequential SO numbering (SO-YYYY-NNNN) |
+| `ShipmentGenerator` | Ships against open SOs, carrier selection, tracking number generation, inventory reduction, GL posting (DR COGS, CR Inventory) |
+| `CustomerInvoiceGenerator` | Invoice from shipped order, payment terms from customer master, due date calculation, GL posting (DR AR, CR Revenue), sequential numbering (INV-YYYY-NNNN) |
+| `CustomerPaymentProcessor` | FIFO payment allocation (oldest invoice first), short pay handling, overpay → Unapplied Cash (no negative invoice balance), GL posting (DR Cash, CR AR) |
+
+### 3. General Ledger Integration
+
+Four classes providing the foundational posting layer consumed by all transaction generators:
+
+| Class | Responsibility |
+|-------|---------------|
+| `GLPostingEngine` | Journal entry creation, balance validation (DR = CR within $0.01), account validation against Chart of Accounts (is_posting=TRUE), period validation (OPEN only), sequential JE numbering, continuous trial balance check |
+| `AccountBalanceManager` | Real-time balance maintenance with `SELECT FOR UPDATE` locking for concurrent access, normal balance direction enforcement (Asset/Expense: DR increases; Liability/Equity/Revenue: CR increases), period-based tracking |
+| `AccrualGenerator` | AP accruals for GRNI (Goods Received Not Invoiced), AR accruals for shipped-not-invoiced, straight-line daily method (Total / Days in Period), reversing entries for next period |
+| `PeriodCloseManager` | 10-step close process: validate all posted → generate accruals → generate deferrals → post depreciation → recurring JEs → account reconciliations → trial balance → validate financial statements → close period → open next period |
+
+### 4. Discrepancy Injection System
+
+A configurable injector implementing 35+ discrepancy types with ground truth label generation:
+
+| Category | Count | Examples |
+|----------|-------|---------|
+| **P2P Discrepancies** | 15 | Duplicate Invoice (P2P-001), Price Mismatch (P2P-002), Quantity Variance (P2P-003), Missing PO (P2P-004), PO Not Approved (P2P-005), Invoice Before Receipt (P2P-006), Round-Dollar Invoice (P2P-007), Weekend Processing (P2P-008), Duplicate Payment (P2P-009), Payment Before Invoice (P2P-010), Unapproved Vendor (P2P-011), Split PO (P2P-012), Fictitious Vendor (P2P-013), Vendor Concentration (P2P-014), Ghost Expense (P2P-015) |
+| **O2C Discrepancies** | 10 | Duplicate Customer Invoice (O2C-001), Invoice Without Shipment (O2C-002), Credit Limit Exceeded (O2C-003), Short Payment (O2C-004), Overpayment Not Returned (O2C-005), Revenue Recognition Timing (O2C-006), Fictitious Customer (O2C-007), Round-Tripping (O2C-008), Channel Stuffing (O2C-009), Side Agreements (O2C-010) |
+| **GL Discrepancies** | 5 | Unbalanced Journal (GL-001), Journal Without Approval (GL-002), Suspicious Adjusting Entry (GL-003), Unusual Account Combo (GL-004), Manual Override (GL-005) |
+| **Control Discrepancies** | 5 | SoD Violation (CTL-001), Self-Approval (CTL-002), Approval Limit Exceeded (CTL-003), Backdated Transaction (CTL-004), Holiday Transaction (CTL-005) |
+
+**Injection Configuration:**
+- Default injection rate: 2% of transactions
+- Difficulty distribution: Easy (70%) / Medium (30%) / Hard (0% — MVP)
+- All parameters bounded and configurable via YAML
+- Auto-adjust to bounds when enabled
+- 100% ground truth coverage with 16-field schema
+
+### 5. Intelligent Rework Loop
+
+An autonomous error correction system for validation failures:
+
+| Class | Responsibility |
+|-------|---------------|
+| `ReworkLoopEngine` | Orchestrates the classify → select fix → apply → re-validate → escalate cycle; max 3 attempts per transaction; escalates if >5% failure rate |
+| `FailureClassifier` | Classifies validation failures as planned discrepancy (within/outside parameters) or unplanned error |
+| `FixScenarioCatalog` | 20+ fix scenarios (e.g., ADJUST_AMOUNT_TO_RANGE, FIX_DATE_SEQUENCE, CORRECT_ENTITY_REFERENCE, REGENERATE_GL_ENTRY, RECALCULATE_BALANCE) sorted by success rate |
+| `FixScenarioExecutor` | Executes fix scenario steps against a transaction; handles per-scenario timeout (10s); logs fix attempt details |
+
+### 6. Period Close Processing
+
+Period-end management integrated with the TimeController's `PeriodClosing`/`PeriodClosed` events:
+
+- **Accruals**: GRNI (Goods Received Not Invoiced), shipped-not-invoiced, straight-line daily method
+- **Deferrals**: Prepaid expenses and unearned revenue adjustments
+- **Depreciation**: Fixed asset depreciation entries
+- **Recurring Journal Entries**: Template-based monthly entries
+- **Account Reconciliations**: AR, AP, and Inventory sub-ledger to GL control account reconciliation
+- **Trial Balance Validation**: Cumulative zero validation before period close
+- **Period State Transitions**: OPEN → CLOSING → CLOSED with next period auto-open
+
+---
+
+## 🏗️ PROJECT 3 MODULE STRUCTURE
+
+```
+app/transactions/                          # Transaction generation engines
+  ├── __init__.py                          # Exports TransactionGenerator, GenerationContext, TransactionResult
+  ├── base_generator.py                    # Abstract base class with shared logic
+  ├── exceptions.py                        # Custom exception hierarchy (TransactionError, BalanceError, etc.)
+  ├── constants.py                         # Shared constants, limits, circuit breaker config
+  ├── p2p/                                 # Procure-to-Pay generators (5 classes)
+  │   ├── __init__.py
+  │   ├── purchase_order_generator.py
+  │   ├── goods_receipt_generator.py
+  │   ├── vendor_invoice_processor.py
+  │   ├── three_way_matcher.py
+  │   └── vendor_payment_generator.py
+  ├── o2c/                                 # Order-to-Cash generators (4 classes)
+  │   ├── __init__.py
+  │   ├── sales_order_generator.py
+  │   ├── shipment_generator.py
+  │   ├── customer_invoice_generator.py
+  │   └── customer_payment_processor.py
+  └── gl/                                  # General Ledger integration (4 classes)
+      ├── __init__.py
+      ├── gl_posting_engine.py
+      ├── account_balance_manager.py
+      ├── accrual_generator.py
+      └── period_close_manager.py
+
+app/discrepancies/                         # Discrepancy injection system
+  ├── __init__.py                          # Exports injector, ground truth generator, catalog
+  ├── discrepancy_injector.py              # Rate-based injection trigger, type selection
+  ├── ground_truth_generator.py            # Ground truth record creation (16-field schema)
+  ├── discrepancy_catalog.py               # Registry mapping 35+ type codes to implementations
+  ├── base_discrepancy.py                  # Abstract BaseDiscrepancy class
+  ├── p2p/                                 # 15 P2P discrepancy type implementations
+  │   ├── __init__.py
+  │   ├── duplicate_invoice.py             # P2P-001
+  │   ├── price_mismatch.py               # P2P-002
+  │   ├── quantity_variance.py             # P2P-003
+  │   ├── missing_po.py                   # P2P-004
+  │   ├── po_not_approved.py              # P2P-005
+  │   ├── invoice_before_receipt.py       # P2P-006
+  │   ├── round_dollar_invoice.py         # P2P-007
+  │   ├── weekend_processing.py           # P2P-008
+  │   ├── duplicate_payment.py            # P2P-009
+  │   ├── payment_before_invoice.py       # P2P-010
+  │   ├── unapproved_vendor.py            # P2P-011
+  │   ├── split_po.py                     # P2P-012
+  │   ├── fictitious_vendor.py            # P2P-013
+  │   ├── vendor_concentration.py         # P2P-014
+  │   └── ghost_expense.py               # P2P-015
+  ├── o2c/                                 # 10 O2C discrepancy type implementations
+  │   ├── __init__.py
+  │   ├── duplicate_customer_invoice.py   # O2C-001
+  │   ├── invoice_without_shipment.py     # O2C-002
+  │   ├── credit_limit_exceeded.py        # O2C-003
+  │   ├── short_payment.py               # O2C-004
+  │   ├── overpayment_not_returned.py     # O2C-005
+  │   ├── revenue_recognition_timing.py   # O2C-006
+  │   ├── fictitious_customer.py          # O2C-007
+  │   ├── round_tripping.py              # O2C-008
+  │   ├── channel_stuffing.py            # O2C-009
+  │   └── side_agreements.py             # O2C-010
+  ├── gl/                                  # 5 GL discrepancy type implementations
+  │   ├── __init__.py
+  │   ├── unbalanced_journal.py           # GL-001
+  │   ├── journal_no_approval.py          # GL-002
+  │   ├── suspicious_adjusting.py         # GL-003
+  │   ├── unusual_account_combo.py        # GL-004
+  │   └── manual_override.py             # GL-005
+  └── control/                             # 5 Control discrepancy type implementations
+      ├── __init__.py
+      ├── sod_violation.py                # CTL-001
+      ├── self_approval.py                # CTL-002
+      ├── approval_limit_exceeded.py      # CTL-003
+      ├── backdated_transaction.py        # CTL-004
+      └── holiday_transaction.py          # CTL-005
+
+app/rework/                                # Intelligent rework loop
+  ├── __init__.py                          # Exports rework engine, classifier, catalog, executor
+  ├── rework_loop_engine.py                # Orchestrates classify → fix → re-validate → escalate
+  ├── failure_classifier.py                # Classifies failures as planned discrepancy or unplanned error
+  ├── fix_scenario_catalog.py              # 20+ fix scenarios with success rates and step definitions
+  └── fix_scenario_executor.py             # Executes fix scenario steps against transactions
+```
+
+---
+
+## ⚙️ PROJECT 3 CONFIGURATION
+
+### New Configuration Files
+
+| File Path | Purpose |
+|-----------|---------|
+| `config/discrepancies/p2p_discrepancies.yaml` | 15 P2P discrepancy type definitions with codes, categories, difficulties, base rates, and parameter bounds |
+| `config/discrepancies/o2c_discrepancies.yaml` | 10 O2C discrepancy type definitions with codes, categories, difficulties, base rates, and parameter bounds |
+| `config/discrepancies/gl_discrepancies.yaml` | 5 GL + 5 Control discrepancy type definitions |
+| `config/discrepancies/discrepancy_rates.yaml` | Global injection rate (default 2%), difficulty distribution (easy: 0.70, medium: 0.30, hard: 0.00), auto-adjust settings |
+| `config/transactions/posting_rules.yaml` | GL posting account mappings per transaction type (e.g., goods_receipt: DR Inventory, CR AP Accrual) |
+| `config/transactions/period_close.yaml` | Period close configuration: accrual rules, depreciation method, recurring JE templates, reconciliation targets |
+
+### New Environment Variables (`.env.example`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TRANSACTION_BATCH_SIZE` | `100` | Number of transactions per generation batch |
+| `GL_POSTING_BATCH_SIZE` | `500` | Number of GL entries per posting batch |
+| `DISCREPANCY_INJECTION_ENABLED` | `true` | Enable/disable discrepancy injection |
+| `DISCREPANCY_DEFAULT_RATE` | `0.02` | Default discrepancy injection rate (2%) |
+| `DISCREPANCY_DIFFICULTY_DISTRIBUTION` | `0.70,0.30,0.00` | Difficulty distribution for injected discrepancies (easy,medium,hard) |
+| `REWORK_LOOP_ENABLED` | `true` | Enable/disable the intelligent rework loop |
+| `REWORK_LOOP_MAX_ATTEMPTS` | `3` | Maximum fix attempts per transaction |
+| `REWORK_LOOP_TIMEOUT_SECONDS` | `30` | Timeout per rework attempt |
+| `REWORK_ESCALATION_THRESHOLD` | `0.05` | Failure rate threshold for escalation (5%) |
+| `CONCURRENT_TRANSACTION_LIMIT` | `100` | Maximum concurrent transaction workflows |
+| `ENABLE_TRANSACTION_CACHING` | `true` | Enable caching of transaction generation results |
+
+---
+
+## 🔧 PROJECT 3 ERROR HANDLING
+
+### Exception Hierarchy
+
+```python
+class TransactionError(Exception):
+    """Base exception for all transaction errors."""
+
+class TransactionGenerationError(TransactionError):
+    """Error during transaction generation."""
+
+class BalanceError(TransactionError):
+    """GL entry doesn't balance (DR ≠ CR)."""
+
+class ThreeWayMatchError(TransactionError):
+    """Three-way match failure beyond tolerance."""
+
+class DiscrepancyInjectionError(TransactionError):
+    """Error during discrepancy injection."""
+
+class ReworkLoopError(TransactionError):
+    """Error during rework loop processing."""
+
+class PeriodClosedError(TransactionError):
+    """Attempt to post to a closed period."""
+
+class GLPostingError(TransactionError):
+    """Error during GL posting."""
+
+class PaymentAllocationError(TransactionError):
+    """Error during payment allocation."""
+
+class ConcurrencyError(TransactionError):
+    """Concurrent access conflict."""
+```
+
+### Retry Policies
+
+| Operation | Retry Attempts | Backoff Strategy | Timeout | Fallback |
+|-----------|---------------|-----------------|---------|----------|
+| P2P cycle generation | 2 | Linear (1s, 2s) | 60s | Skip transaction |
+| O2C cycle generation | 2 | Linear (1s, 2s) | 60s | Skip transaction |
+| GL posting | 3 | Exponential (1s, 2s, 4s) | 30s | Rollback transaction |
+| Three-way matching | 2 | Linear (500ms, 1s) | 10s | Mark as exception |
+| Discrepancy injection | 1 | None | 5s | Skip discrepancy |
+| Rework loop fix | 3 | Linear (1s, 2s, 3s) | 30s | Escalate to admin |
+| Period close | 1 | None | 300s | Halt, require manual intervention |
+| Balance update | 2 | Linear (500ms, 1s) | 10s | Rollback transaction |
+
+### Circuit Breakers
+
+| Component | Failure Threshold | Recovery Period | Fallback Action |
+|-----------|------------------|----------------|-----------------|
+| GL Posting | 10 consecutive failures | 60 seconds | Rollback and queue for retry |
+| Discrepancy Injection | 20 consecutive failures | 30 seconds | Skip injection, log warning |
+| Rework Loop | 50 consecutive failures | 120 seconds | Escalate all pending items |
+
+---
+
+## 🔬 PROJECT 3 TECHNOLOGY ADDITIONS
+
+### New Production Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `sqlalchemy` | `==2.0.25` | ORM and async database access for transaction persistence via Project 1's `get_session()` |
+| `psycopg2-binary` | `==2.9.9` | PostgreSQL adapter for SQLAlchemy async sessions |
+| `aiofiles` | `==23.2.1` | Async file I/O for ground truth JSON/CSV output files |
+| `pydantic-settings` | `==2.2.0` | Environment variable loading for P3 configuration |
+| `pandas` | `==2.2.0` | DataFrame operations for ground truth summary CSV generation and batch analytics |
+
+### New Test/Dev Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `pytest-mock` | `>=3.12.0` | Advanced mocking for transaction generator tests and GL posting stubs |
+| `hypothesis` | `>=6.92.0` | Property-based testing for transaction generation validation (amounts, balances, sequences) |
+
+### Key Architectural Constraints
+
+- **Python 3.11.7**: Required for specific `Decimal` rounding behavior and `typing.Self` support
+- **Decimal Precision**: `decimal.getcontext().prec = 28`, `rounding = ROUND_HALF_UP` — never use `float` for monetary amounts
+- **Database Access**: All database operations via `from synthetic_erp.db.session import get_session` with `async with get_session() as session:`
+- **Constructor Injection**: All subsystems receive dependencies through constructors (ADR-003) — no service locator, no global state
+- **Pydantic V2**: All data contracts at subsystem boundaries use `pydantic.BaseModel`
+- **EventBus**: Cross-subsystem async notifications via existing EventBus (ADR-001)
+- **Structured Logging**: `structlog` JSON to stdout only — every log entry includes `timestamp`, `service_name`, `component`, `level`, `message`, `trace_id`, `simulation_id`
+- **Deterministic Reproducibility**: All random operations use seeded `random.Random` instances — identical seeds produce identical transaction sequences
+- **Single Company Focus**: No intercompany, consolidation, or multi-currency for MVP
+- **No External Workflow Engines**: In-memory code only — no Airflow, Prefect, or similar
+
+---
+
+## 🔗 PROJECT 3 INTEGRATION WITH PROJECTS 1 & 2
+
+### Dependencies on Project 1
+
+- **Database Sessions**: `get_session()` from `synthetic_erp.db.session` for all database operations
+- **Master Data**: Customers, vendors, products, employees, Chart of Accounts
+- **Validation Framework**: P0/P1 validation rules consumed by the rework loop
+
+### Dependencies on Project 2
+
+- **Agent Registry**: 12 specialized agents serve as decision-makers within transaction workflows
+- **Workflow Orchestrator**: Routes transactions to agents via `ROLE_MAPPING`
+- **EventBus**: Publishes `TransactionCreated`, `TransactionCompleted`, `DiscrepancyDetected`, `ApprovalRequired`, `PeriodClosing`, `PeriodClosed`, `DocumentGenerated` events
+- **Statistical Models**: Amount distributions, payment timing, order frequency, entity selection
+- **Time Controller**: Subscribes to `PeriodClosing` events for period close processing
+- **Approval System**: Enforces PO ($5K/$25K/$100K), vendor invoice ($10K/$50K/$100K), and journal entry ($50K) thresholds
+
+### Provided to Project 4
+
+- Transaction data and artifacts for document generation
+- Ground truth labels for discrepancy detection training
+- GL balances and financial statements for reporting
+
+---
+
+## 📦 PROJECT 3 DELIVERABLES CHECKLIST
+
+### Code Deliverables
+- [ ] Abstract `TransactionGenerator` base class with shared logic
+- [ ] Custom exception hierarchy (`TransactionError` and 9 subclasses)
+- [ ] 5 P2P transaction generators (PO, Receipt, Invoice, 3-Way Match, Payment)
+- [ ] 4 O2C transaction generators (Order, Shipment, Invoice, Payment)
+- [ ] GL Posting Engine with balance validation and trial balance checks
+- [ ] Account Balance Manager with `SELECT FOR UPDATE` locking
+- [ ] Accrual Generator (GRNI, shipped-not-invoiced, reversing entries)
+- [ ] Period Close Manager (10-step close process)
+- [ ] Discrepancy Injector with rate-based trigger and type selection
+- [ ] Ground Truth Generator with 16-field schema
+- [ ] Discrepancy Catalog mapping 35+ type codes to implementations
+- [ ] 35 individual discrepancy type implementations (15 P2P, 10 O2C, 5 GL, 5 Control)
+- [ ] Rework Loop Engine with classify → fix → re-validate → escalate cycle
+- [ ] Failure Classifier (planned discrepancy vs. unplanned error)
+- [ ] Fix Scenario Catalog with 20+ fix scenarios
+- [ ] Fix Scenario Executor with per-scenario timeout
+- [ ] Integration into SimulationEngine composition root
+
+### Configuration Deliverables
+- [ ] P2P, O2C, GL discrepancy configuration YAML files
+- [ ] Global discrepancy injection rate configuration
+- [ ] GL posting rules YAML
+- [ ] Period close configuration YAML
+- [ ] 11 new environment variables in `.env.example`
+
+### Testing Deliverables
+- [ ] Unit tests for all transaction generators (≥80% coverage)
+- [ ] Full P2P and O2C cycle integration tests with GL balance assertions
+- [ ] GL posting engine tests (balance validation, trial balance, concurrent posting, rollback atomicity)
+- [ ] Three-way matching tolerance tests
+- [ ] Period close tests (accruals, trial balance, state transitions)
+- [ ] Discrepancy injection rate and distribution tests
+- [ ] Ground truth completeness and schema validation tests
+- [ ] Parameterized tests for all 35+ discrepancy types
+- [ ] Rework loop end-to-end tests (3-attempt limit, escalation)
+- [ ] Failure classification tests (planned vs. unplanned)
+- [ ] Fix scenario selection and execution tests
+- [ ] Property-based tests using Hypothesis for financial invariants
+
+---
+
+## ✅ PROJECT 3 ACCEPTANCE CRITERIA
+
+### Financial Integrity
+1. ✅ GL Balance Zero: `SUM(Debits) - SUM(Credits) == $0.00` after batch of 1,000 mixed transactions
+2. ✅ Concurrent Posting: 20 agents post to 'Cash' account simultaneously; final balance equals sum of inputs
+3. ✅ Period Close: Transactions dated Dec 31 are posted; Jan 1 transactions blocked until period opens
+4. ✅ Overpayment: Payment of $1,100 on $1,000 invoice → $0 Invoice Balance + $100 Unapplied Cash (no negative balance)
+5. ✅ Rollback: DB error during 'Post Line 2' causes 'Post Line 1' to disappear (Atomicity)
+
+### Transaction Workflows
+1. ✅ Complete P2P cycle produces all required artifacts (PO, receipt, invoice, 3-way match, payment, GL entries)
+2. ✅ Complete O2C cycle produces all required artifacts (SO, shipment, invoice, payment, GL entries)
+3. ✅ Three-way match enforces ±5% price and ±2% quantity tolerances
+4. ✅ FIFO payment allocation processes oldest invoices first
+5. ✅ Approval chains enforced for amounts exceeding configured thresholds
+
+### Discrepancy System
+1. ✅ Injection rate within ±1% of configured target
+2. ✅ All 35+ discrepancy types produce valid ground truth records
+3. ✅ Parameters respect configured bounds
+4. ✅ Easy/Medium difficulty distribution within ±5% tolerance
+
+### Rework Loop
+1. ✅ Unplanned errors corrected within 3 attempts or escalated
+2. ✅ Fix scenarios sorted by success rate and excluding previously failed scenarios
+3. ✅ Rework completes within 30-second timeout per transaction
+
+---
+
+## 📚 REFERENCE SPECIFICATIONS
+
+> **Note:** The following specification documents are external upstream design documents that informed the implementation of this project. They are **not included** in this repository — they reside in the project's design documentation system and are referenced here for traceability purposes only.
+
+### Project 2 References
+1. **AGENT_ARCHITECTURE.md** - Agent structure, roles, memory
+2. **AGENT_DECISION_SPEC.md** - Decision logic, LLM prompts
+3. **ORCHESTRATION_DESIGN.md** - Workflow orchestration
+4. **STATISTICAL_MODELS_SPEC.md** - Payment timing, amounts
+5. **EXTERNAL_ENTITIES_SPEC.md** - Customer/vendor simulation
+6. **FINANCIAL_GROUNDING_SPEC.md** - Financial targets
+
+### Project 3 References
+7. **DISCREPANCY_CATALOG.md** - All 65+ discrepancy types (35+ for MVP)
+8. **GROUND_TRUTH_SPEC.md** - Ground truth schemas
+9. **REWORK_FLOW_SPEC.md** - Intelligent rework loop
+10. **DATA_CONSISTENCY_SPEC.md** - Integrity constraints
+11. **VALIDATION_FRAMEWORK_SPEC.md** - Validation rules
+
+---
+
+**END OF PROJECT 2 & PROJECT 3 SPECIFICATION**

@@ -1,0 +1,270 @@
+# =============================================================================
+# GL Posting Rules Configuration
+# =============================================================================
+#
+# Purpose:
+#   Defines debit/credit account mappings for each transaction type's General
+#   Ledger journal entry posting. The GLPostingEngine reads this file at
+#   initialization to determine which accounts to debit and credit when
+#   recording transactions in the General Ledger.
+#
+# Consuming modules:
+#   - app/transactions/gl/gl_posting_engine.py   (GLPostingEngine)
+#   - app/transactions/gl/account_balance_manager.py (AccountBalanceManager)
+#
+# Specification reference: AAP Section 0.5.1 Group 4, Group 7
+#
+# Account Number Conventions:
+#   Account numbers align with Project 1's Chart of Accounts (CoA):
+#     1000 — Cash
+#     1200 — Accounts Receivable
+#     1300 — Inventory
+#     2000 — Accounts Payable
+#     2100 — AP Accrual (Goods Received Not Invoiced)
+#     4000 — Revenue
+#     4900 — Discount Revenue (contra-revenue)
+#     5000 — Cost of Goods Sold
+#     5100 — Purchase Discount (contra-expense)
+#     5900 — Bad Debt Expense
+#     6000 — General Expense
+#     6100 — Depreciation Expense
+#     8000 — Unapplied Cash
+#
+# Rules:
+#   - Every posting rule MUST produce balanced journal entries (DR = CR)
+#   - Account numbers MUST exist as is_posting=TRUE in the Chart of Accounts
+#   - auto_reverse: true means the entry is automatically reversed on the
+#     first day of the next period (used for accruals)
+#   - Some transaction types have optional additional lines (discounts, etc.)
+#     modeled via the `additional_lines` array
+#
+# IMPORTANT: Do NOT alter account numbers without coordinating with
+# Project 1's Chart of Accounts definitions.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Posting Rules — 8 Transaction Types
+# -----------------------------------------------------------------------------
+# Each rule maps a transaction type to its primary debit/credit accounts.
+# The GLPostingEngine iterates this list to find the matching rule for a
+# given transaction_type string. Rules are listed in the natural business
+# process order: P2P (goods_receipt → vendor_invoice → vendor_payment),
+# O2C (sales_shipment → customer_invoice → customer_payment), then accruals.
+# -----------------------------------------------------------------------------
+posting_rules:
+
+  # ---------------------------------------------------------------------------
+  # 1. Goods Receipt Posting
+  # ---------------------------------------------------------------------------
+  # Records inventory received against open purchase orders.
+  # Triggered by GoodsReceiptGenerator when goods arrive at the warehouse.
+  # GL Impact: Increases Inventory (asset), increases AP Accrual (liability).
+  # Source: AAP Section 0.5.1 Group 2 — GoodsReceiptGenerator
+  # ---------------------------------------------------------------------------
+  - transaction_type: "goods_receipt"
+    description: "Record inventory received against open purchase orders"
+    debit_account: 1300                  # Inventory (asset)
+    debit_account_name: "Inventory"
+    credit_account: 2100                 # AP Accrual / GRNI (liability)
+    credit_account_name: "AP Accrual"
+    auto_reverse: false
+
+  # ---------------------------------------------------------------------------
+  # 2. Vendor Invoice Posting
+  # ---------------------------------------------------------------------------
+  # Records vendor invoice liability and expense/asset recognition.
+  # Triggered by VendorInvoiceProcessor after three-way match approval.
+  # GL Impact: Increases Expense (or Asset for inventory), increases AP.
+  #
+  # NOTE: The debit account varies by PO line category at posting time:
+  #   - 6000 (General Expense) for expense items (DEFAULT)
+  #   - 1300 (Inventory) for inventory/stock items
+  # The GLPostingEngine determines the actual debit account per line;
+  # 6000 is used as the default when the category is unspecified.
+  # Source: AAP Section 0.5.1 Group 2 — VendorInvoiceProcessor
+  # ---------------------------------------------------------------------------
+  - transaction_type: "vendor_invoice"
+    description: "Record vendor invoice liability and expense/asset recognition"
+    debit_account: 6000                  # General Expense (default — varies by PO line)
+    debit_account_name: "General Expense"
+    credit_account: 2000                 # Accounts Payable (liability)
+    credit_account_name: "Accounts Payable"
+    auto_reverse: false
+
+  # ---------------------------------------------------------------------------
+  # 3. Vendor Payment Posting
+  # ---------------------------------------------------------------------------
+  # Records vendor payment disbursement.
+  # Triggered by VendorPaymentGenerator when approved invoices are paid.
+  # GL Impact: Decreases AP (liability), decreases Cash (asset).
+  # Optional: Early payment discount reduces effective purchase cost via
+  # Purchase Discount (contra-expense account 5100).
+  # Source: AAP Section 0.5.1 Group 2 — VendorPaymentGenerator
+  # ---------------------------------------------------------------------------
+  - transaction_type: "vendor_payment"
+    description: "Record vendor payment disbursement"
+    debit_account: 2000                  # Accounts Payable (liability)
+    debit_account_name: "Accounts Payable"
+    credit_account: 1000                 # Cash (asset)
+    credit_account_name: "Cash"
+    auto_reverse: false
+    additional_lines:
+      # When the vendor payment qualifies for an early payment discount
+      # (e.g., 2/10 Net 30), the discount amount is credited to Purchase
+      # Discount (contra-expense). This reduces the net cost of the purchase.
+      - type: "early_payment_discount"
+        debit_account: null              # No additional debit (included in primary)
+        credit_account: 5100             # Purchase Discount (contra-expense)
+        credit_account_name: "Purchase Discount"
+        description: "Early payment discount taken"
+        conditional: true                # Only posted when discount terms apply
+
+  # ---------------------------------------------------------------------------
+  # 4. Sales Shipment Posting
+  # ---------------------------------------------------------------------------
+  # Records cost of goods shipped to customers.
+  # Triggered by ShipmentGenerator when goods are shipped from warehouse.
+  # GL Impact: Increases COGS (expense), decreases Inventory (asset).
+  # Source: AAP Section 0.5.1 Group 3 — ShipmentGenerator
+  # ---------------------------------------------------------------------------
+  - transaction_type: "sales_shipment"
+    description: "Record cost of goods shipped to customers"
+    debit_account: 5000                  # Cost of Goods Sold (expense)
+    debit_account_name: "Cost of Goods Sold"
+    credit_account: 1300                 # Inventory (asset)
+    credit_account_name: "Inventory"
+    auto_reverse: false
+
+  # ---------------------------------------------------------------------------
+  # 5. Customer Invoice Posting
+  # ---------------------------------------------------------------------------
+  # Records customer invoice revenue recognition.
+  # Triggered by CustomerInvoiceGenerator after shipment confirmation.
+  # GL Impact: Increases AR (asset), increases Revenue.
+  # Source: AAP Section 0.5.1 Group 3 — CustomerInvoiceGenerator
+  # ---------------------------------------------------------------------------
+  - transaction_type: "customer_invoice"
+    description: "Record customer invoice revenue recognition"
+    debit_account: 1200                  # Accounts Receivable (asset)
+    debit_account_name: "Accounts Receivable"
+    credit_account: 4000                 # Revenue
+    credit_account_name: "Revenue"
+    auto_reverse: false
+
+  # ---------------------------------------------------------------------------
+  # 6. Customer Payment Posting
+  # ---------------------------------------------------------------------------
+  # Records customer payment receipt.
+  # Triggered by CustomerPaymentProcessor using FIFO allocation
+  # (oldest invoice first — not configurable per AAP Section 0.1.2).
+  # GL Impact: Increases Cash (asset), decreases AR (asset).
+  #
+  # Three optional additional line types handle special payment scenarios:
+  #   - early_payment_discount: Customer takes early payment discount
+  #   - bad_debt_writeoff: Short payment written off as bad debt
+  #   - overpayment: Payment exceeds invoice — creates Unapplied Cash
+  #     (per AAP Section 0.1.2: "If Payment > Invoice, create Unapplied
+  #     Cash record — do NOT allow negative invoice balances")
+  #
+  # Source: AAP Section 0.5.1 Group 3 — CustomerPaymentProcessor
+  # ---------------------------------------------------------------------------
+  - transaction_type: "customer_payment"
+    description: "Record customer payment receipt"
+    debit_account: 1000                  # Cash (asset)
+    debit_account_name: "Cash"
+    credit_account: 1200                 # Accounts Receivable (asset)
+    credit_account_name: "Accounts Receivable"
+    auto_reverse: false
+    additional_lines:
+      # Customer takes early payment discount — recorded as contra-revenue.
+      # Reduces effective revenue recognized for the sale.
+      - type: "early_payment_discount"
+        debit_account: 4900              # Discount Revenue (contra-revenue)
+        debit_account_name: "Discount Revenue"
+        credit_account: null             # No additional credit (included in primary)
+        description: "Customer early payment discount"
+        conditional: true                # Only posted when discount terms apply
+
+      # Short payment below threshold — written off as bad debt expense.
+      # Applied when the short pay amount is immaterial and not worth pursuing.
+      - type: "bad_debt_writeoff"
+        debit_account: 5900              # Bad Debt Expense
+        debit_account_name: "Bad Debt Expense"
+        credit_account: null             # No additional credit (included in primary)
+        description: "Bad debt write-off for short payment"
+        conditional: true                # Only posted when short pay is written off
+
+      # Overpayment handling: When Payment > Invoice, excess goes to
+      # Unapplied Cash. Per AAP Section 0.1.2: no negative invoice balances.
+      - type: "overpayment"
+        debit_account: null              # No additional debit (included in primary)
+        credit_account: 8000             # Unapplied Cash
+        credit_account_name: "Unapplied Cash"
+        description: "Overpayment recorded as unapplied cash"
+        conditional: true                # Only posted when payment exceeds invoice
+
+  # ---------------------------------------------------------------------------
+  # 7. Accrual — Goods Received Not Invoiced (GRNI)
+  # ---------------------------------------------------------------------------
+  # Period-end accrual for goods received but vendor invoice not yet recorded.
+  # Generated by AccrualGenerator during period close processing.
+  # GL Impact: Increases Expense, increases AP Accrual (liability).
+  # auto_reverse: true — entry is automatically reversed on the first day
+  # of the next period so that the actual invoice posting is not doubled.
+  # Accrual method: Straight-Line Daily (Total / Days in Period)
+  # Source: AAP Section 0.5.1 Group 4 — AccrualGenerator
+  # ---------------------------------------------------------------------------
+  - transaction_type: "accrual_grni"
+    description: "Goods received not invoiced accrual"
+    debit_account: 6000                  # General Expense (default — varies by PO line)
+    debit_account_name: "General Expense"
+    credit_account: 2100                 # AP Accrual / GRNI (liability)
+    credit_account_name: "AP Accrual"
+    auto_reverse: true                   # Reversed on first day of next period
+
+  # ---------------------------------------------------------------------------
+  # 8. Accrual — Shipped Not Invoiced
+  # ---------------------------------------------------------------------------
+  # Period-end accrual for goods shipped but customer invoice not yet issued.
+  # Generated by AccrualGenerator during period close processing.
+  # GL Impact: Increases AR (asset), increases Revenue.
+  # auto_reverse: true — entry is automatically reversed on the first day
+  # of the next period so that the actual invoice posting is not doubled.
+  # Accrual method: Straight-Line Daily (Total / Days in Period)
+  # Source: AAP Section 0.5.1 Group 4 — AccrualGenerator
+  # ---------------------------------------------------------------------------
+  - transaction_type: "accrual_shipped_not_invoiced"
+    description: "Shipped not invoiced revenue accrual"
+    debit_account: 1200                  # Accounts Receivable (asset)
+    debit_account_name: "Accounts Receivable"
+    credit_account: 4000                 # Revenue
+    credit_account_name: "Revenue"
+    auto_reverse: true                   # Reversed on first day of next period
+
+# =============================================================================
+# Global Posting Settings
+# =============================================================================
+# Settings that apply across all transaction types and posting rules.
+# These control journal entry balance validation tolerance, period
+# enforcement, and sequential journal entry numbering.
+# Source: AAP Section 0.7.2 (Financial Integrity Rules)
+# =============================================================================
+posting_settings:
+  # Maximum allowable imbalance between total debits and total credits
+  # in a single journal entry. Per AAP Section 0.7.2:
+  #   "Every journal entry MUST satisfy SUM(debits) = SUM(credits)
+  #    within $0.01 tolerance (Decimal('0.01'))."
+  balance_tolerance: 0.01               # $0.01 maximum imbalance (USD)
+
+  # Whether journal entries can only be posted to fiscal periods with
+  # status = OPEN. When true, postings to CLOSING or CLOSED periods
+  # are rejected by the GLPostingEngine.
+  require_open_period: true              # Entries restricted to OPEN periods only
+
+  # Prefix for sequential journal entry numbering
+  sequential_numbering_prefix: "JE"      # Journal entry number prefix
+
+  # Python format string for journal entry numbering.
+  # Produces identifiers like JE-2024-0001, JE-2024-0002, etc.
+  # The GLPostingEngine increments the sequence per fiscal year.
+  numbering_format: "JE-{year}-{sequence:04d}"

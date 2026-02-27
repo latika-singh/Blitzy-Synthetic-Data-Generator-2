@@ -2,7 +2,7 @@
 # Synthetic ERP Data Generation Platform — Project 2
 # Agent & Orchestration Engine — Production Dependencies
 # =============================================================================
-# This file lists all 13 production packages required by the engine.
+# This file lists all 18 production packages required by the engine.
 # Dev/test dependencies are in requirements-dev.txt.
 # Version specifiers sourced from the project specification (README.md).
 # =============================================================================
@@ -43,3 +43,12 @@ tenacity>=8.2.0            # Retry with exponential backoff for LLM API calls
 # ML / Embeddings
 # -----------------------------------------------------------------------------
 sentence-transformers>=2.3.0  # Local all-MiniLM-L6-v2 embeddings for agent memory semantic retrieval
+
+# -----------------------------------------------------------------------------
+# Project 3: Transaction Workflows & Database
+# -----------------------------------------------------------------------------
+sqlalchemy==2.0.25         # ORM and async database access for transaction persistence via Project 1's get_session()
+psycopg2-binary==2.9.9     # PostgreSQL adapter for SQLAlchemy async sessions (Project 1 database)
+aiofiles==23.2.1           # Async file I/O for ground truth JSON/CSV output files
+pydantic-settings==2.2.0   # Environment variable loading for P3 configuration (TRANSACTION_BATCH_SIZE, etc.)
+pandas==2.2.0              # DataFrame operations for ground truth summary CSV generation and batch analytics

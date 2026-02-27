@@ -22,3 +22,9 @@ pytest-cov>=4.1.0          # Coverage reporting — target >=80% across all sour
 # -----------------------------------------------------------------------------
 fakeredis>=2.21.0          # In-memory Redis mock for unit tests (agent memory, LLM queue, event store)
 aioresponses>=0.7.6        # Mocking aiohttp requests for Project 1 REST API integration tests
+
+# -----------------------------------------------------------------------------
+# Project 3: Transaction Workflow Testing
+# -----------------------------------------------------------------------------
+pytest-mock>=3.12.0        # Advanced mocking for transaction generator tests, GL posting stubs, and fixture patching
+hypothesis>=6.92.0         # Property-based testing for transaction generation validation (amounts, GL balance, sequences)

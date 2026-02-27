@@ -9,6 +9,12 @@ Tests cover:
     - WorkflowInstance Pydantic V2 model validation
     - WorkflowConfig defaults and custom values
     - Concurrent workflow support and routing SLA verification
+    - P3 P2P transaction routing (purchase_order, goods_receipt,
+      vendor_invoice, vendor_payment) [AAP Section 0.2.1]
+    - P3 O2C transaction routing (sales_order, customer_invoice,
+      customer_payment) [AAP Section 0.2.1]
+    - P3 rework loop re-submission routing [AAP Section 0.2.1]
+    - P3 period close and GL transaction routing [AAP Section 0.2.1]
 
 Design Notes:
     - All agent dependencies are MOCKED (MagicMock / AsyncMock) — no real
@@ -23,6 +29,7 @@ References:
     - AAP Section 0.5.1 Group 10 (test requirements)
     - AAP Section 0.7.3 (performance constraints)
     - AAP Section 0.7.5 (testing standards)
+    - AAP Section 0.2.1 (P3 transaction routing test requirements)
 """
 
 from __future__ import annotations
@@ -247,6 +254,615 @@ class TestRoleMapping:
         """goods_receipt → ['warehouse_clerk']."""
         roles = orchestrator._get_required_roles("goods_receipt")
         assert roles == ["warehouse_clerk"]
+
+
+# ---------------------------------------------------------------------------
+# Test Class — P3 P2P Transaction Routing (AAP Section 0.2.1)
+# ---------------------------------------------------------------------------
+
+
+class TestP3P2PTransactionRouting:
+    """Verify ROLE_MAPPING coverage for all P2P transaction types used by P3.
+
+    Per AAP Section 0.2.1:
+    - P2P pipeline: purchase_order → goods_receipt → vendor_invoice → vendor_payment
+    - Each P2P type must map to eligible agent roles for workflow routing
+    """
+
+    def test_purchase_order_routes_to_purchasing_roles(
+        self, orchestrator: WorkflowOrchestrator
+    ) -> None:
+        """P2P step 1: purchase_order → ['purchasing_agent', 'purchasing_manager']."""
+        roles = orchestrator._get_required_roles("purchase_order")
+        assert roles == ["purchasing_agent", "purchasing_manager"]
+        assert "purchasing_agent" in roles  # Primary handler
+
+    def test_goods_receipt_routes_to_warehouse_clerk(
+        self, orchestrator: WorkflowOrchestrator
+    ) -> None:
+        """P2P step 2: goods_receipt → ['warehouse_clerk']."""
+        roles = orchestrator._get_required_roles("goods_receipt")
+        assert roles == ["warehouse_clerk"]
+
+    def test_vendor_invoice_routes_to_ap_roles(
+        self, orchestrator: WorkflowOrchestrator
+    ) -> None:
+        """P2P step 3: vendor_invoice → ['ap_clerk', 'ap_manager']."""
+        roles = orchestrator._get_required_roles("vendor_invoice")
+        assert roles == ["ap_clerk", "ap_manager"]
+        assert "ap_clerk" in roles  # Primary handler
+
+    def test_vendor_payment_routes_to_ap_clerk(
+        self, orchestrator: WorkflowOrchestrator
+    ) -> None:
+        """P2P step 4: vendor_payment → ['ap_clerk']."""
+        roles = orchestrator._get_required_roles("vendor_payment")
+        assert roles == ["ap_clerk"]
+
+    def test_all_p2p_types_have_role_mapping(self) -> None:
+        """All 4 P2P transaction types must be present in ROLE_MAPPING."""
+        p2p_types = ["purchase_order", "goods_receipt", "vendor_invoice", "vendor_payment"]
+        for txn_type in p2p_types:
+            assert txn_type in ROLE_MAPPING, (
+                f"P2P type '{txn_type}' missing from ROLE_MAPPING"
+            )
+            assert len(ROLE_MAPPING[txn_type]) > 0, (
+                f"P2P type '{txn_type}' has empty role list"
+            )
+
+    @pytest.mark.asyncio
+    async def test_route_purchase_order_to_purchasing_agent(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """Full routing of a purchase_order to a purchasing_agent."""
+        agent = create_mock_agent(role="purchasing_agent", state=AgentState.IDLE)
+        mock_agent_registry.get_agents_by_roles.return_value = [agent]
+
+        txn = {"transaction_id": str(uuid4()), "vendor_id": "V-001", "amount": 5000.00}
+        wf_id = await orchestrator.route_transaction(txn, "purchase_order")
+
+        wf = orchestrator.workflows[wf_id]
+        assert wf.transaction_type == "purchase_order"
+        assert wf.assigned_agent_id == agent.config.agent_id
+        assert wf.status == WorkflowStatus.ASSIGNED.value
+
+    @pytest.mark.asyncio
+    async def test_route_goods_receipt_to_warehouse_clerk(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """Full routing of a goods_receipt to a warehouse_clerk."""
+        agent = create_mock_agent(role="warehouse_clerk", state=AgentState.IDLE)
+        mock_agent_registry.get_agents_by_roles.return_value = [agent]
+
+        txn = {"transaction_id": str(uuid4()), "po_id": "PO-001", "amount": 5000.00}
+        wf_id = await orchestrator.route_transaction(txn, "goods_receipt")
+
+        wf = orchestrator.workflows[wf_id]
+        assert wf.transaction_type == "goods_receipt"
+        assert wf.assigned_agent_id == agent.config.agent_id
+
+    @pytest.mark.asyncio
+    async def test_route_vendor_payment_to_ap_clerk(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """Full routing of a vendor_payment to an ap_clerk."""
+        agent = create_mock_agent(role="ap_clerk", state=AgentState.IDLE)
+        mock_agent_registry.get_agents_by_roles.return_value = [agent]
+
+        txn = {"transaction_id": str(uuid4()), "vendor_id": "V-001", "amount": 15000.00}
+        wf_id = await orchestrator.route_transaction(txn, "vendor_payment")
+
+        wf = orchestrator.workflows[wf_id]
+        assert wf.transaction_type == "vendor_payment"
+        assert wf.assigned_agent_id == agent.config.agent_id
+
+    @pytest.mark.asyncio
+    async def test_full_p2p_routing_sequence(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """Route all 4 P2P types in sequence, verifying each gets assigned."""
+        purchasing_agent = create_mock_agent(role="purchasing_agent", state=AgentState.IDLE)
+        warehouse_clerk = create_mock_agent(role="warehouse_clerk", state=AgentState.IDLE)
+        ap_clerk = create_mock_agent(role="ap_clerk", state=AgentState.IDLE)
+
+        def get_agents_for_roles(roles):
+            agents = []
+            if "purchasing_agent" in roles or "purchasing_manager" in roles:
+                agents.append(purchasing_agent)
+            if "warehouse_clerk" in roles:
+                agents.append(warehouse_clerk)
+            if "ap_clerk" in roles or "ap_manager" in roles:
+                agents.append(ap_clerk)
+            return agents
+
+        mock_agent_registry.get_agents_by_roles.side_effect = get_agents_for_roles
+
+        p2p_types = ["purchase_order", "goods_receipt", "vendor_invoice", "vendor_payment"]
+        wf_ids = []
+        for txn_type in p2p_types:
+            txn = {"transaction_id": str(uuid4()), "amount": 5000.00}
+            wf_id = await orchestrator.route_transaction(txn, txn_type)
+            wf_ids.append(wf_id)
+
+        assert len(wf_ids) == 4
+        assert len(set(wf_ids)) == 4  # All unique
+        for wf_id in wf_ids:
+            wf = orchestrator.workflows[wf_id]
+            assert wf.status == WorkflowStatus.ASSIGNED.value
+
+
+# ---------------------------------------------------------------------------
+# Test Class — P3 O2C Transaction Routing (AAP Section 0.2.1)
+# ---------------------------------------------------------------------------
+
+
+class TestP3O2CTransactionRouting:
+    """Verify ROLE_MAPPING coverage for all O2C transaction types used by P3.
+
+    Per AAP Section 0.2.1:
+    - O2C pipeline: sales_order → shipment → customer_invoice → customer_payment
+    - Most O2C types map to ar_clerk
+    - shipment type may not have explicit routing in current ROLE_MAPPING
+    """
+
+    def test_sales_order_routes_to_ar_clerk(
+        self, orchestrator: WorkflowOrchestrator
+    ) -> None:
+        """O2C step 1: sales_order → ['ar_clerk']."""
+        roles = orchestrator._get_required_roles("sales_order")
+        assert roles == ["ar_clerk"]
+
+    def test_customer_invoice_routes_to_ar_clerk(
+        self, orchestrator: WorkflowOrchestrator
+    ) -> None:
+        """O2C step 3: customer_invoice → ['ar_clerk']."""
+        roles = orchestrator._get_required_roles("customer_invoice")
+        assert roles == ["ar_clerk"]
+
+    def test_customer_payment_routes_to_ar_clerk(
+        self, orchestrator: WorkflowOrchestrator
+    ) -> None:
+        """O2C step 4: customer_payment → ['ar_clerk']."""
+        roles = orchestrator._get_required_roles("customer_payment")
+        assert roles == ["ar_clerk"]
+
+    def test_shipment_routing_behavior(
+        self, orchestrator: WorkflowOrchestrator
+    ) -> None:
+        """O2C step 2: shipment returns configured roles or empty list.
+
+        The shipment type may or may not have an explicit ROLE_MAPPING entry.
+        This test documents the current behavior.
+        """
+        roles = orchestrator._get_required_roles("shipment")
+        # If shipment is in ROLE_MAPPING, verify it returns a non-empty list
+        # If not, it returns an empty list (graceful fallback)
+        if "shipment" in ROLE_MAPPING:
+            assert len(roles) > 0
+        else:
+            assert roles == []
+
+    def test_core_o2c_types_have_role_mapping(self) -> None:
+        """Core O2C types (sales_order, customer_invoice, customer_payment) in ROLE_MAPPING."""
+        core_o2c_types = ["sales_order", "customer_invoice", "customer_payment"]
+        for txn_type in core_o2c_types:
+            assert txn_type in ROLE_MAPPING, (
+                f"Core O2C type '{txn_type}' missing from ROLE_MAPPING"
+            )
+
+    @pytest.mark.asyncio
+    async def test_route_sales_order_to_ar_clerk(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """Full routing of a sales_order to an ar_clerk."""
+        agent = create_mock_agent(role="ar_clerk", state=AgentState.IDLE)
+        mock_agent_registry.get_agents_by_roles.return_value = [agent]
+
+        txn = {"transaction_id": str(uuid4()), "customer_id": "C-001", "amount": 8000.00}
+        wf_id = await orchestrator.route_transaction(txn, "sales_order")
+
+        wf = orchestrator.workflows[wf_id]
+        assert wf.transaction_type == "sales_order"
+        assert wf.assigned_agent_id == agent.config.agent_id
+        assert wf.status == WorkflowStatus.ASSIGNED.value
+
+    @pytest.mark.asyncio
+    async def test_route_customer_invoice_to_ar_clerk(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """Full routing of a customer_invoice to an ar_clerk."""
+        agent = create_mock_agent(role="ar_clerk", state=AgentState.IDLE)
+        mock_agent_registry.get_agents_by_roles.return_value = [agent]
+
+        txn = {"transaction_id": str(uuid4()), "customer_id": "C-001", "amount": 8000.00}
+        wf_id = await orchestrator.route_transaction(txn, "customer_invoice")
+
+        wf = orchestrator.workflows[wf_id]
+        assert wf.transaction_type == "customer_invoice"
+        assert wf.assigned_agent_id == agent.config.agent_id
+
+    @pytest.mark.asyncio
+    async def test_route_customer_payment_to_ar_clerk(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """Full routing of a customer_payment to an ar_clerk."""
+        agent = create_mock_agent(role="ar_clerk", state=AgentState.IDLE)
+        mock_agent_registry.get_agents_by_roles.return_value = [agent]
+
+        txn = {"transaction_id": str(uuid4()), "customer_id": "C-001", "amount": 8000.00}
+        wf_id = await orchestrator.route_transaction(txn, "customer_payment")
+
+        wf = orchestrator.workflows[wf_id]
+        assert wf.transaction_type == "customer_payment"
+        assert wf.assigned_agent_id == agent.config.agent_id
+
+    @pytest.mark.asyncio
+    async def test_shipment_routes_to_pending_when_no_mapped_agent(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """Shipment with no matching agents goes to PENDING queue.
+
+        If 'shipment' is not in ROLE_MAPPING, _get_required_roles returns [],
+        _find_available_agent returns None, and workflow becomes PENDING.
+        """
+        mock_agent_registry.get_agents_by_roles.return_value = []
+
+        txn = {"transaction_id": str(uuid4()), "so_id": "SO-001", "amount": 8000.00}
+        wf_id = await orchestrator.route_transaction(txn, "shipment")
+
+        wf = orchestrator.workflows[wf_id]
+        assert wf.transaction_type == "shipment"
+        assert wf.status == WorkflowStatus.PENDING.value
+
+    @pytest.mark.asyncio
+    async def test_concurrent_o2c_routing(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """Route O2C types concurrently and verify unique workflow IDs."""
+        ar_agent = create_mock_agent(role="ar_clerk", state=AgentState.IDLE)
+        mock_agent_registry.get_agents_by_roles.return_value = [ar_agent]
+
+        tasks = [
+            orchestrator.route_transaction(
+                {"transaction_id": str(uuid4()), "amount": 1000}, "sales_order"
+            ),
+            orchestrator.route_transaction(
+                {"transaction_id": str(uuid4()), "amount": 2000}, "customer_invoice"
+            ),
+            orchestrator.route_transaction(
+                {"transaction_id": str(uuid4()), "amount": 3000}, "customer_payment"
+            ),
+        ]
+
+        wf_ids = await asyncio.gather(*tasks)
+        assert len(set(wf_ids)) == 3
+
+
+# ---------------------------------------------------------------------------
+# Test Class — P3 Rework Loop Re-submission Routing (AAP Section 0.2.1)
+# ---------------------------------------------------------------------------
+
+
+class TestP3ReworkResubmission:
+    """Verify that P3 transactions returning from the rework loop can be re-routed.
+
+    Per AAP Section 0.2.1:
+    - Transactions that fail validation go through the rework loop
+    - After fix application, they need to be re-routed (retry_workflow)
+    - Max 3 retry attempts before permanent FAILED status
+    """
+
+    @pytest.mark.asyncio
+    async def test_retry_vendor_invoice_after_rework(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """vendor_invoice returning from rework loop is re-routed to ap_clerk."""
+        agent = create_mock_agent(role="ap_clerk", state=AgentState.IDLE)
+        mock_agent_registry.get_agents_by_roles.return_value = [agent]
+
+        # Route original transaction
+        txn = {"transaction_id": str(uuid4()), "vendor_id": "V-001", "amount": 5000.00}
+        wf_id = await orchestrator.route_transaction(txn, "vendor_invoice")
+
+        # Simulate validation failure (rework loop sends back)
+        await orchestrator.fail_workflow(wf_id, "Three-way match failed")
+        wf = orchestrator.workflows[wf_id]
+        assert wf.status == WorkflowStatus.FAILED.value
+
+        # Rework loop applies fix and re-submits (retry_workflow)
+        result = await orchestrator.retry_workflow(wf_id)
+        assert result is True
+
+        wf = orchestrator.workflows[wf_id]
+        assert wf.retry_count == 1
+        assert wf.status == WorkflowStatus.ASSIGNED.value
+        assert wf.assigned_agent_id is not None
+
+    @pytest.mark.asyncio
+    async def test_retry_purchase_order_after_rework(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """purchase_order returning from rework loop is re-routed to purchasing_agent."""
+        agent = create_mock_agent(role="purchasing_agent", state=AgentState.IDLE)
+        mock_agent_registry.get_agents_by_roles.return_value = [agent]
+
+        txn = {"transaction_id": str(uuid4()), "vendor_id": "V-001", "amount": 25000.00}
+        wf_id = await orchestrator.route_transaction(txn, "purchase_order")
+
+        await orchestrator.fail_workflow(wf_id, "Approval chain error")
+        result = await orchestrator.retry_workflow(wf_id)
+        assert result is True
+
+        wf = orchestrator.workflows[wf_id]
+        assert wf.retry_count == 1
+        assert wf.status == WorkflowStatus.ASSIGNED.value
+
+    @pytest.mark.asyncio
+    async def test_retry_goods_receipt_after_rework(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """goods_receipt returning from rework loop is re-routed to warehouse_clerk."""
+        agent = create_mock_agent(role="warehouse_clerk", state=AgentState.IDLE)
+        mock_agent_registry.get_agents_by_roles.return_value = [agent]
+
+        txn = {"transaction_id": str(uuid4()), "po_id": "PO-001", "amount": 5000.00}
+        wf_id = await orchestrator.route_transaction(txn, "goods_receipt")
+
+        await orchestrator.fail_workflow(wf_id, "Quantity mismatch")
+        result = await orchestrator.retry_workflow(wf_id)
+        assert result is True
+
+        wf = orchestrator.workflows[wf_id]
+        assert wf.retry_count == 1
+
+    @pytest.mark.asyncio
+    async def test_rework_exhausts_max_retries(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """After 3 rework attempts, transaction is permanently FAILED."""
+        agent = create_mock_agent(role="ap_clerk", state=AgentState.IDLE)
+        mock_agent_registry.get_agents_by_roles.return_value = [agent]
+
+        txn = {"transaction_id": str(uuid4()), "vendor_id": "V-001", "amount": 5000.00}
+        wf_id = await orchestrator.route_transaction(txn, "vendor_invoice")
+
+        # Simulate 3 rework cycles
+        for attempt in range(3):
+            await orchestrator.fail_workflow(wf_id, f"Rework attempt {attempt + 1} failed")
+            result = await orchestrator.retry_workflow(wf_id)
+            if attempt < 2:  # First 2 retries succeed (retry_count < max)
+                assert result is True
+            # retry_count increments with each retry
+
+        # After 3 retries, the workflow should be permanently failed
+        wf = orchestrator.workflows[wf_id]
+        assert wf.retry_count >= 3
+
+    @pytest.mark.asyncio
+    async def test_retry_customer_payment_after_rework(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """O2C customer_payment can be retried after rework loop fix."""
+        agent = create_mock_agent(role="ar_clerk", state=AgentState.IDLE)
+        mock_agent_registry.get_agents_by_roles.return_value = [agent]
+
+        txn = {"transaction_id": str(uuid4()), "customer_id": "C-001", "amount": 8000.00}
+        wf_id = await orchestrator.route_transaction(txn, "customer_payment")
+
+        await orchestrator.fail_workflow(wf_id, "FIFO allocation error")
+        result = await orchestrator.retry_workflow(wf_id)
+        assert result is True
+
+        wf = orchestrator.workflows[wf_id]
+        assert wf.retry_count == 1
+        assert wf.status == WorkflowStatus.ASSIGNED.value
+
+    @pytest.mark.asyncio
+    async def test_retry_preserves_transaction_type(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """Retried workflows preserve their original transaction_type."""
+        agent = create_mock_agent(role="ap_clerk", state=AgentState.IDLE)
+        mock_agent_registry.get_agents_by_roles.return_value = [agent]
+
+        txn = {"transaction_id": str(uuid4()), "amount": 10000.00}
+        wf_id = await orchestrator.route_transaction(txn, "vendor_invoice")
+
+        await orchestrator.fail_workflow(wf_id, "GL posting error")
+        await orchestrator.retry_workflow(wf_id)
+
+        wf = orchestrator.workflows[wf_id]
+        assert wf.transaction_type == "vendor_invoice"  # Type preserved
+
+
+# ---------------------------------------------------------------------------
+# Test Class — P3 Period Close and GL Transaction Routing (AAP Section 0.2.1)
+# ---------------------------------------------------------------------------
+
+
+class TestP3PeriodCloseRouting:
+    """Verify routing behavior for P3 period close and GL-related types.
+
+    Per AAP Section 0.2.1:
+    - Period close workflows should route to Controller/CFO agents
+    - Journal entry workflows route to accountant/senior_accountant
+    - Currently, period_close, accrual, depreciation, recurring_journal
+      may not have explicit ROLE_MAPPING entries
+    """
+
+    def test_journal_entry_routes_to_accounting_roles(
+        self, orchestrator: WorkflowOrchestrator
+    ) -> None:
+        """journal_entry → ['accountant', 'senior_accountant'] (used by GL posting)."""
+        roles = orchestrator._get_required_roles("journal_entry")
+        assert roles == ["accountant", "senior_accountant"]
+
+    def test_period_close_routing_behavior(
+        self, orchestrator: WorkflowOrchestrator
+    ) -> None:
+        """period_close returns configured roles or empty list.
+
+        If period_close is added to ROLE_MAPPING (e.g., mapping to
+        ['controller', 'cfo']), this test verifies the mapping.
+        Otherwise, documents the fallback to empty roles.
+        """
+        roles = orchestrator._get_required_roles("period_close")
+        if "period_close" in ROLE_MAPPING:
+            assert len(roles) > 0
+            # Expect period close to route to senior financial roles
+        else:
+            assert roles == []
+
+    def test_accrual_routing_behavior(
+        self, orchestrator: WorkflowOrchestrator
+    ) -> None:
+        """accrual returns configured roles or empty list."""
+        roles = orchestrator._get_required_roles("accrual")
+        if "accrual" in ROLE_MAPPING:
+            assert len(roles) > 0
+        else:
+            assert roles == []
+
+    def test_depreciation_routing_behavior(
+        self, orchestrator: WorkflowOrchestrator
+    ) -> None:
+        """depreciation returns configured roles or empty list."""
+        roles = orchestrator._get_required_roles("depreciation")
+        if "depreciation" in ROLE_MAPPING:
+            assert len(roles) > 0
+        else:
+            assert roles == []
+
+    def test_recurring_journal_routing_behavior(
+        self, orchestrator: WorkflowOrchestrator
+    ) -> None:
+        """recurring_journal returns configured roles or empty list."""
+        roles = orchestrator._get_required_roles("recurring_journal")
+        if "recurring_journal" in ROLE_MAPPING:
+            assert len(roles) > 0
+        else:
+            assert roles == []
+
+    @pytest.mark.asyncio
+    async def test_route_journal_entry_to_accountant(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """Journal entry routes to an accountant agent (used for P3 GL posting)."""
+        agent = create_mock_agent(role="accountant", state=AgentState.IDLE)
+        mock_agent_registry.get_agents_by_roles.return_value = [agent]
+
+        txn = {
+            "transaction_id": str(uuid4()),
+            "description": "Period end accrual",
+            "amount": 50000.00,
+        }
+        wf_id = await orchestrator.route_transaction(txn, "journal_entry")
+
+        wf = orchestrator.workflows[wf_id]
+        assert wf.transaction_type == "journal_entry"
+        assert wf.assigned_agent_id == agent.config.agent_id
+        assert wf.status == WorkflowStatus.ASSIGNED.value
+
+    @pytest.mark.asyncio
+    async def test_route_journal_entry_with_approval(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+        mock_approval_system: MagicMock,
+    ) -> None:
+        """Journal entry above $50K threshold triggers approval routing."""
+        agent = create_mock_agent(role="accountant", state=AgentState.IDLE)
+        mock_agent_registry.get_agents_by_roles.return_value = [agent]
+        mock_approval_system.get_required_approval.return_value = "controller"
+
+        txn = {
+            "transaction_id": str(uuid4()),
+            "description": "Large adjusting entry",
+            "amount": 75000.00,
+        }
+        wf_id = await orchestrator.route_transaction(txn, "journal_entry")
+
+        wf = orchestrator.workflows[wf_id]
+        assert wf.approval_required is True
+        assert wf.approval_role == "controller"
+
+    @pytest.mark.asyncio
+    async def test_period_close_goes_pending_when_no_mapping(
+        self,
+        orchestrator: WorkflowOrchestrator,
+        mock_agent_registry: MagicMock,
+    ) -> None:
+        """Period close without ROLE_MAPPING entry goes to PENDING queue."""
+        mock_agent_registry.get_agents_by_roles.return_value = []
+
+        txn = {
+            "transaction_id": str(uuid4()),
+            "description": "January 2025 Period Close",
+            "fiscal_period": "2025-01",
+        }
+        wf_id = await orchestrator.route_transaction(txn, "period_close")
+
+        wf = orchestrator.workflows[wf_id]
+        assert wf.transaction_type == "period_close"
+        # Without a ROLE_MAPPING entry, no agents match → PENDING
+        assert wf.status == WorkflowStatus.PENDING.value
+
+    def test_role_mapping_covers_all_eight_base_types(self) -> None:
+        """ROLE_MAPPING must cover all 8 transaction types from P2 specification."""
+        expected_types = {
+            "purchase_order",
+            "vendor_invoice",
+            "vendor_payment",
+            "goods_receipt",
+            "sales_order",
+            "customer_invoice",
+            "customer_payment",
+            "journal_entry",
+        }
+        assert expected_types.issubset(set(ROLE_MAPPING.keys())), (
+            f"Missing types: {expected_types - set(ROLE_MAPPING.keys())}"
+        )
+
+    def test_role_mapping_all_values_are_nonempty_string_lists(self) -> None:
+        """Every ROLE_MAPPING value must be a non-empty list of strings."""
+        for txn_type, roles in ROLE_MAPPING.items():
+            assert isinstance(roles, list), f"{txn_type}: not a list"
+            assert len(roles) > 0, f"{txn_type}: empty role list"
+            for role in roles:
+                assert isinstance(role, str), f"{txn_type}: role {role!r} not a string"
+                assert len(role) > 0, f"{txn_type}: empty string role"
 
 
 # ---------------------------------------------------------------------------

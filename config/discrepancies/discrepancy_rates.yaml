@@ -1,0 +1,198 @@
+# =============================================================================
+# Discrepancy Injection Rate Configuration
+# =============================================================================
+#
+# Purpose:
+#   Defines global discrepancy injection rates, difficulty distribution,
+#   tolerance settings, auto-adjust behavior, and per-category weighting
+#   for the Discrepancy Injection System. This is the master configuration
+#   that controls WHEN and HOW discrepancies are injected into generated
+#   transactions.
+#
+# Consuming modules:
+#   - app/discrepancies/discrepancy_injector.py  (DiscrepancyInjector)
+#   - app/discrepancies/discrepancy_catalog.py   (DiscrepancyCatalog)
+#   - app/discrepancies/ground_truth_generator.py (GroundTruthGenerator)
+#
+# Related configuration files:
+#   - config/discrepancies/p2p_discrepancies.yaml   (15 P2P types)
+#   - config/discrepancies/o2c_discrepancies.yaml   (10 O2C types)
+#   - config/discrepancies/gl_discrepancies.yaml    (5 GL + 5 Control types)
+#
+# Specification reference: AAP Section 0.1.2, Section 0.7.5
+#
+# Key constraints (from AAP):
+#   - Global injection rate default is 2% (0.02)
+#   - Rate tolerance: ±1% (actual rate must be within ±0.01 of target)
+#   - Difficulty distribution MUST sum to 1.00
+#   - Distribution tolerance: ±5% (actual distribution within ±0.05 of target)
+#   - No "hard" difficulty discrepancies in MVP (hard: 0.00)
+#   - 100% of injected discrepancies MUST have ground truth records
+#   - Environment variable DISCREPANCY_INJECTION_ENABLED controls on/off
+#   - Environment variable DISCREPANCY_DEFAULT_RATE overrides global_injection_rate
+#
+# IMPORTANT: difficulty_distribution values MUST sum to exactly 1.00.
+# IMPORTANT: Do NOT set hard > 0.00 for MVP.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Global Injection Settings
+# -----------------------------------------------------------------------------
+# Master controls for the discrepancy injection pipeline. These settings
+# determine whether injection is active, the base rate at which discrepancies
+# are injected, and the tolerance for rate accuracy validation.
+#
+# The global_injection_rate can be overridden at runtime by the
+# DISCREPANCY_DEFAULT_RATE environment variable. The enabled flag can be
+# overridden by the DISCREPANCY_INJECTION_ENABLED environment variable.
+#
+# Source: AAP Section 0.1.2 ("DISCREPANCY_DEFAULT_RATE=0.02"),
+#         AAP Section 0.7.5 ("Rate Control: ±1% of configured target rate")
+# -----------------------------------------------------------------------------
+injection_settings:
+  global_injection_rate: 0.02            # 2% of transactions — overridden by DISCREPANCY_DEFAULT_RATE env var
+  enabled: true                          # Overridden by DISCREPANCY_INJECTION_ENABLED env var
+  rate_tolerance: 0.01                   # ±1% — actual rate must be within 0.01 of target
+  min_transactions_before_injection: 10  # Warm-up period — ensure baseline clean transactions
+
+# -----------------------------------------------------------------------------
+# Difficulty Distribution
+# -----------------------------------------------------------------------------
+# Controls the proportion of injected discrepancies assigned to each
+# difficulty level. The distribution determines how hard each discrepancy
+# is to detect during analysis.
+#
+# CRITICAL: easy + medium + hard MUST sum to exactly 1.00.
+# MVP constraint: hard MUST remain at 0.00 (hard difficulty not implemented).
+#
+# Source: AAP Section 0.1.2 ("No Hard Difficulty Discrepancies: MVP focuses
+#         on Easy/Medium only; hard difficulty distribution is 0.00"),
+#         AAP Section 0.7.5 ("Easy (70%) / Medium (30%) / Hard (0%)")
+# -----------------------------------------------------------------------------
+difficulty_distribution:
+  easy: 0.70                             # 70% of injected discrepancies
+  medium: 0.30                           # 30% of injected discrepancies
+  hard: 0.00                             # 0% — MVP only, hard difficulty not implemented
+  distribution_tolerance: 0.05           # ±5% — actual distribution within 0.05 of targets
+
+# -----------------------------------------------------------------------------
+# Category Weights
+# -----------------------------------------------------------------------------
+# Relative probability of selecting each discrepancy category when injection
+# is triggered. Weights determine which category a discrepancy is drawn from
+# before an individual type within the category is selected.
+#
+# IMPORTANT: Category weights MUST sum to exactly 1.00.
+#
+# Weight rationale:
+#   - P2P receives the highest weight (0.40) because it has the most types (15)
+#   - O2C receives the second-highest weight (0.30) with 10 types
+#   - GL and Control each receive 0.15, reflecting 5 types each
+#
+# Source: AAP Section 0.5.1 Group 5 (type counts per category)
+# -----------------------------------------------------------------------------
+category_weights:
+  p2p: 0.40                              # 40% — P2P has the most types (15)
+  o2c: 0.30                              # 30% — O2C has 10 types
+  gl: 0.15                               # 15% — GL has 5 types
+  control: 0.15                          # 15% — Control has 5 types
+
+# -----------------------------------------------------------------------------
+# Per-Type Rate Overrides
+# -----------------------------------------------------------------------------
+# Allows fine-grained control over injection rates for individual discrepancy
+# types. The min_rate and max_rate establish global bounds that no per-type
+# rate may exceed. Specific type overrides can be added to the override_list.
+#
+# Override list format example:
+#   - code: "P2P-001"
+#     rate: 0.05
+#   - code: "O2C-003"
+#     rate: 0.03
+# -----------------------------------------------------------------------------
+per_type_rate_overrides:
+  min_rate: 0.001                        # Minimum per-type rate (0.1%)
+  max_rate: 0.10                         # Maximum per-type rate (10%)
+  override_list: []                      # Per-type overrides — format: {code: 'P2P-001', rate: 0.05}
+
+# -----------------------------------------------------------------------------
+# Auto-Adjust Settings
+# -----------------------------------------------------------------------------
+# Controls automatic parameter clamping behavior. When enabled, any
+# discrepancy parameter that falls outside its configured bounds is
+# automatically clamped to the nearest valid bound value instead of
+# raising an error.
+#
+# Source: AAP Section 0.7.5 ("When auto_adjust_to_bounds is True, parameters
+#         that fall outside bounds MUST be automatically clamped to the
+#         nearest bound value")
+# -----------------------------------------------------------------------------
+auto_adjust:
+  enabled: true                          # Clamp out-of-bounds parameters to nearest bound
+  log_adjustments: true                  # Log when parameters are auto-adjusted
+
+# -----------------------------------------------------------------------------
+# Ground Truth Requirements
+# -----------------------------------------------------------------------------
+# Defines requirements for ground truth record generation. Every injected
+# discrepancy MUST produce a corresponding ground truth record to enable
+# downstream analysis and model training.
+#
+# Source: AAP Section 0.7.5 ("Ground Truth Coverage: 100% of injected
+#         discrepancies MUST have a corresponding ground truth record with
+#         all 16 schema fields populated"),
+#         AAP Section 0.5.1 Group 5 (GroundTruthGenerator schema)
+# -----------------------------------------------------------------------------
+ground_truth:
+  coverage_requirement: 1.00             # 100% — every injected discrepancy must have ground truth
+  required_fields: 16                    # 16 fields per ground truth record (AAP Section 0.5.1 Group 5)
+  output_formats:                        # JSON and CSV output for analysis
+    - "json"
+    - "csv"
+
+# -----------------------------------------------------------------------------
+# Circuit Breaker Configuration
+# -----------------------------------------------------------------------------
+# Circuit breaker settings for the discrepancy injection subsystem. When
+# consecutive failures exceed the threshold, the circuit opens and all
+# injection attempts are skipped (fallback behavior) until the recovery
+# timeout elapses. After recovery, the circuit enters half-open state and
+# allows a single test injection before fully closing.
+#
+# Source: AAP Section 0.1.2 ("discrepancy injection: 20 failures → open,
+#         30s recovery")
+# -----------------------------------------------------------------------------
+circuit_breaker:
+  failure_threshold: 20                  # 20 failures → circuit opens
+  recovery_timeout_seconds: 30           # 30s recovery before half-open
+  fallback: "skip_discrepancy"           # Skip injection when circuit is open
+
+# -----------------------------------------------------------------------------
+# Retry Policy
+# -----------------------------------------------------------------------------
+# Retry configuration for individual discrepancy injection attempts.
+# Discrepancy injection uses a single-attempt policy with no retries —
+# if injection fails, the transaction proceeds without a discrepancy
+# and the failure is logged.
+#
+# Source: AAP Section 0.1.2 retry policy table ("Discrepancy injection:
+#         1 attempt, None backoff, 5s timeout, Skip discrepancy fallback")
+# -----------------------------------------------------------------------------
+retry_policy:
+  max_attempts: 1                        # No retry for discrepancy injection
+  backoff_strategy: "none"               # No backoff — single attempt only
+  timeout_seconds: 5                     # 5s timeout per injection
+  fallback: "skip_discrepancy"           # Skip on failure — do not block transaction
+
+# -----------------------------------------------------------------------------
+# Environment Variable Mapping
+# -----------------------------------------------------------------------------
+# Documents which environment variables can override configuration values
+# at runtime. Environment variables take precedence over this file when set.
+#
+# Source: AAP Section 0.4.1 (.env.example additions)
+# -----------------------------------------------------------------------------
+environment_overrides:
+  injection_enabled: "DISCREPANCY_INJECTION_ENABLED"          # boolean — 'true'/'false'
+  default_rate: "DISCREPANCY_DEFAULT_RATE"                    # float — e.g., '0.02'
+  difficulty_distribution: "DISCREPANCY_DIFFICULTY_DISTRIBUTION"  # JSON string — e.g., '{"easy": 0.70, "medium": 0.30, "hard": 0.00}'

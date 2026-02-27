@@ -16,9 +16,24 @@ Tests cover:
 - Multi-day simulation with cumulative metric accumulation
 - Edge cases: empty date range, single day, empty interactions, routing failures
 
+Project 3 integration tests:
+- P3 Constructor Injection: gl_posting_engine, discrepancy_injector,
+  rework_loop_engine, period_close_manager, p2p_generators, o2c_generators
+- P3 Transaction Generation: P2P and O2C generator invocation in Step 2
+- P3 Discrepancy Injection: DiscrepancyInjector pipeline in Step 3
+- P3 Rework Loop: Rework validation in Step 4.5
+- P3 GL Posting: GL posting engine integration
+- P3 Period Close: PeriodCloseManager invocation on period closing
+- P3 Health Check: P3 subsystem availability reporting
+- P3 Daily Metrics: P3-specific metric tracking and accumulation
+- P3 DayContext Fields: P3 workflow state lists and computed properties
+- P3 Multi-Day Integration: Multi-day accumulation and pipeline ordering
+
 Testing standards (AAP §0.7.5):
 - All external dependencies mocked (TimeController, ExternalWorldManager,
   WorkflowOrchestrator, EventBus, AgentRegistry)
+- P3 subsystems mocked (GLPostingEngine, DiscrepancyInjector,
+  ReworkLoopEngine, PeriodCloseManager, P2P/O2C generators)
 - No live LLM API calls
 - No external Redis dependency
 - pytest-asyncio for async tests
@@ -310,7 +325,7 @@ class TestDayContext:
         assert len(ctx.simulation_id) > 0
 
     def test_day_context_to_daily_summary_dict(self) -> None:
-        """to_daily_summary_dict returns the exact 7 keys per README.md 1748-1757."""
+        """to_daily_summary_dict returns the expected keys per README.md 1748-1757 plus P3 metrics."""
         ctx = DayContext(
             simulation_date=date(2024, 1, 2),
             transactions_generated=45,
@@ -329,6 +344,17 @@ class TestDayContext:
             "llm_requests",
             "llm_cost_usd",
             "duration_seconds",
+            # P3: Transaction Workflow Metrics
+            "p2p_cycles_completed",
+            "o2c_cycles_completed",
+            "gl_entries_posted",
+            "discrepancies_injected",
+            "ground_truths_created",
+            "rework_attempts",
+            "rework_successes",
+            "rework_escalations",
+            "period_closes_completed",
+            "trial_balance_checks_passed",
         }
         assert set(summary.keys()) == expected_keys
         assert summary["simulation_date"] == "2024-01-02"
@@ -336,6 +362,10 @@ class TestDayContext:
         assert summary["agents_active"] == 12
         assert summary["llm_requests"] == 30
         assert summary["duration_seconds"] == 22.5
+        # P3 metrics default to 0
+        assert summary["p2p_cycles_completed"] == 0
+        assert summary["o2c_cycles_completed"] == 0
+        assert summary["gl_entries_posted"] == 0
 
     def test_day_context_fiscal_period_info(self) -> None:
         """DayContext embeds FiscalPeriodInfo correctly."""
@@ -1679,3 +1709,1214 @@ class TestEdgeCases:
         result = await asyncio.wait_for(engine.run(), timeout=10.0)
         assert result is not None
         assert result["days_processed"] >= 1
+
+
+# ============================================================================
+# Project 3 — P3 Integration Test Fixtures
+# ============================================================================
+
+
+@pytest.fixture
+def mock_gl_posting_engine() -> AsyncMock:
+    """AsyncMock for GLPostingEngine with balanced posting responses."""
+    engine = AsyncMock()
+    engine.post_pending_entries = AsyncMock(return_value={
+        "entries_posted": 5,
+        "total_debits": "2500.00",
+        "total_credits": "2500.00",
+        "is_balanced": True,
+    })
+    engine.post_journal_entry = AsyncMock(return_value={
+        "journal_entry_id": "JE-2024-0001",
+        "status": "posted",
+        "is_balanced": True,
+    })
+    engine.validate_balance = AsyncMock(return_value=True)
+    engine.check_trial_balance = AsyncMock(return_value=True)
+    return engine
+
+
+@pytest.fixture
+def mock_discrepancy_injector() -> AsyncMock:
+    """AsyncMock for DiscrepancyInjector with configurable injection behavior."""
+    injector = AsyncMock()
+    injector.injection_rate = 0.02
+    injector.process_batch = AsyncMock(return_value={
+        "discrepancies_injected": 2,
+        "ground_truths_created": 2,
+        "types_injected": {"P2P-001": 1, "O2C-004": 1},
+    })
+    injector.should_inject = MagicMock(return_value=False)
+    injector.get_metrics = MagicMock(return_value={
+        "total_checked": 0,
+        "total_injected": 0,
+        "injection_rate": 0.02,
+    })
+    return injector
+
+
+@pytest.fixture
+def mock_rework_loop_engine() -> AsyncMock:
+    """AsyncMock for ReworkLoopEngine with configurable rework responses."""
+    engine = AsyncMock()
+    engine.max_attempts = 3
+    engine.timeout_seconds = 30.0
+    engine.process_day = AsyncMock(return_value={
+        "attempts": 3,
+        "successes": 2,
+        "escalations": 1,
+    })
+    engine.get_metrics = MagicMock(return_value={
+        "total_processed": 0,
+        "total_resolved": 0,
+        "total_escalated": 0,
+    })
+    return engine
+
+
+@pytest.fixture
+def mock_period_close_manager() -> AsyncMock:
+    """AsyncMock for PeriodCloseManager with period close responses."""
+    manager = AsyncMock()
+    manager.execute_period_close = AsyncMock(return_value={
+        "period": "2024-01",
+        "status": "closed",
+        "trial_balance_passed": 1,
+        "accruals_generated": 5,
+    })
+    return manager
+
+
+@pytest.fixture
+def mock_p2p_generators() -> Dict[str, AsyncMock]:
+    """Dict of AsyncMock P2P generators keyed by name."""
+    po_gen = AsyncMock()
+    po_gen.generate = AsyncMock(return_value={
+        "cycles_completed": 3,
+        "transactions_generated": 12,
+    })
+    receipt_gen = AsyncMock()
+    receipt_gen.generate = AsyncMock(return_value={
+        "cycles_completed": 2,
+        "transactions_generated": 4,
+    })
+    return {"purchase_order": po_gen, "goods_receipt": receipt_gen}
+
+
+@pytest.fixture
+def mock_o2c_generators() -> Dict[str, AsyncMock]:
+    """Dict of AsyncMock O2C generators keyed by name."""
+    so_gen = AsyncMock()
+    so_gen.generate = AsyncMock(return_value={
+        "cycles_completed": 4,
+        "transactions_generated": 16,
+    })
+    ship_gen = AsyncMock()
+    ship_gen.generate = AsyncMock(return_value={
+        "cycles_completed": 3,
+        "transactions_generated": 6,
+    })
+    return {"sales_order": so_gen, "shipment": ship_gen}
+
+
+@pytest.fixture
+def p3_simulation_engine(
+    simulation_config: SimulationConfig,
+    mock_time_controller: AsyncMock,
+    mock_external_world_manager: AsyncMock,
+    mock_workflow_orchestrator: AsyncMock,
+    mock_event_bus: AsyncMock,
+    mock_agent_registry: MagicMock,
+    simulation_metrics: SimulationMetrics,
+    mock_gl_posting_engine: AsyncMock,
+    mock_discrepancy_injector: AsyncMock,
+    mock_rework_loop_engine: AsyncMock,
+    mock_period_close_manager: AsyncMock,
+    mock_p2p_generators: Dict[str, AsyncMock],
+    mock_o2c_generators: Dict[str, AsyncMock],
+) -> SimulationEngine:
+    """Fully-wired SimulationEngine with ALL P2 AND P3 mocked dependencies.
+
+    This fixture extends the existing ``simulation_engine`` fixture by
+    additionally injecting all P3 subsystems per ADR-003 constructor
+    injection pattern.
+    """
+    return SimulationEngine(
+        config=simulation_config,
+        time_controller=mock_time_controller,
+        external_world_manager=mock_external_world_manager,
+        workflow_orchestrator=mock_workflow_orchestrator,
+        event_bus=mock_event_bus,
+        agent_registry=mock_agent_registry,
+        metrics=simulation_metrics,
+        # P3 subsystems
+        gl_posting_engine=mock_gl_posting_engine,
+        discrepancy_injector=mock_discrepancy_injector,
+        rework_loop_engine=mock_rework_loop_engine,
+        period_close_manager=mock_period_close_manager,
+        p2p_generators=mock_p2p_generators,
+        o2c_generators=mock_o2c_generators,
+    )
+
+
+# ============================================================================
+# Phase P3-1: P3 Constructor Injection Tests
+# ============================================================================
+
+
+class TestP3ConstructorInjection:
+    """Tests for SimulationEngine accepting P3 subsystems via constructor injection (ADR-003).
+
+    Verifies:
+    - Constructor accepts gl_posting_engine, discrepancy_injector, rework_loop_engine,
+      period_close_manager, p2p_generators, o2c_generators as Optional parameters
+    - All new subsystems stored as private attributes
+    - Engine functions correctly when P3 subsystems are None (graceful degradation)
+    - Engine functions correctly when ALL P3 subsystems are provided
+    """
+
+    def test_p3_subsystems_stored(
+        self, p3_simulation_engine: SimulationEngine
+    ) -> None:
+        """All P3 subsystems are stored as private attributes when injected."""
+        assert p3_simulation_engine._gl_posting_engine is not None
+        assert p3_simulation_engine._discrepancy_injector is not None
+        assert p3_simulation_engine._rework_loop_engine is not None
+        assert p3_simulation_engine._period_close_manager is not None
+        assert len(p3_simulation_engine._p2p_generators) > 0
+        assert len(p3_simulation_engine._o2c_generators) > 0
+
+    def test_p3_subsystems_none_by_default(
+        self, simulation_config: SimulationConfig
+    ) -> None:
+        """SimulationEngine with only config has all P3 subsystems as None/empty."""
+        engine = SimulationEngine(config=simulation_config)
+        assert engine._gl_posting_engine is None
+        assert engine._discrepancy_injector is None
+        assert engine._rework_loop_engine is None
+        assert engine._period_close_manager is None
+        assert engine._p2p_generators == {}
+        assert engine._o2c_generators == {}
+
+    def test_p3_partial_injection(
+        self,
+        simulation_config: SimulationConfig,
+        mock_gl_posting_engine: AsyncMock,
+    ) -> None:
+        """Engine accepts partial P3 injection — only some subsystems provided."""
+        engine = SimulationEngine(
+            config=simulation_config,
+            gl_posting_engine=mock_gl_posting_engine,
+            # All other P3 subsystems remain None
+        )
+        assert engine._gl_posting_engine is not None
+        assert engine._discrepancy_injector is None
+        assert engine._rework_loop_engine is None
+        assert engine._period_close_manager is None
+
+    @pytest.mark.asyncio
+    async def test_p3_none_subsystems_graceful_degradation(
+        self,
+        simulation_config: SimulationConfig,
+        mock_time_controller: AsyncMock,
+        mock_external_world_manager: AsyncMock,
+        mock_workflow_orchestrator: AsyncMock,
+        mock_event_bus: AsyncMock,
+        mock_agent_registry: MagicMock,
+        simulation_metrics: SimulationMetrics,
+    ) -> None:
+        """Simulation runs without errors when all P3 modules are None.
+
+        Per ADR-003: None values silently skip functionality, enabling
+        incremental integration and test isolation.
+        """
+        engine = SimulationEngine(
+            config=simulation_config,
+            time_controller=mock_time_controller,
+            external_world_manager=mock_external_world_manager,
+            workflow_orchestrator=mock_workflow_orchestrator,
+            event_bus=mock_event_bus,
+            agent_registry=mock_agent_registry,
+            metrics=simulation_metrics,
+            # No P3 subsystems — all default to None
+        )
+        result = await asyncio.wait_for(engine.run(), timeout=10.0)
+        assert result is not None
+        assert result["days_processed"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_p3_full_injection_runs_successfully(
+        self, p3_simulation_engine: SimulationEngine
+    ) -> None:
+        """Simulation with ALL P3 subsystems injected runs to completion."""
+        result = await asyncio.wait_for(p3_simulation_engine.run(), timeout=10.0)
+        assert result is not None
+        assert result["days_processed"] > 0
+
+
+# ============================================================================
+# Phase P3-2: P3 Transaction Generation Tests (Step 2 Extension)
+# ============================================================================
+
+
+class TestP3TransactionGeneration:
+    """Tests for P3 transaction generators invoked during Step 2 of _process_day().
+
+    Verifies:
+    - P2P generators are called with day_context during _process_day
+    - O2C generators are called with day_context during _process_day
+    - day_context.p2p_cycles_completed and o2c_cycles_completed are updated
+    - Generator errors are caught and logged, not propagated
+    - Generators run AFTER ExternalWorldManager (Step 2 ordering)
+    """
+
+    @pytest.mark.asyncio
+    async def test_p2p_generators_invoked(
+        self,
+        p3_simulation_engine: SimulationEngine,
+        mock_p2p_generators: Dict[str, AsyncMock],
+    ) -> None:
+        """P2P generators are called during _process_day."""
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await p3_simulation_engine._process_day(ctx)
+        # Both P2P generators should have been called
+        for gen_name, gen_mock in mock_p2p_generators.items():
+            gen_mock.generate.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_o2c_generators_invoked(
+        self,
+        p3_simulation_engine: SimulationEngine,
+        mock_o2c_generators: Dict[str, AsyncMock],
+    ) -> None:
+        """O2C generators are called during _process_day."""
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await p3_simulation_engine._process_day(ctx)
+        for gen_name, gen_mock in mock_o2c_generators.items():
+            gen_mock.generate.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_p2p_cycles_counted(
+        self,
+        p3_simulation_engine: SimulationEngine,
+    ) -> None:
+        """day_context.p2p_cycles_completed is updated from P2P generator results.
+
+        Mock P2P generators return: purchase_order=3, goods_receipt=2 -> total=5.
+        """
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await p3_simulation_engine._process_day(ctx)
+        assert ctx.p2p_cycles_completed == 5
+
+    @pytest.mark.asyncio
+    async def test_o2c_cycles_counted(
+        self,
+        p3_simulation_engine: SimulationEngine,
+    ) -> None:
+        """day_context.o2c_cycles_completed is updated from O2C generator results.
+
+        Mock O2C generators return: sales_order=4, shipment=3 -> total=7.
+        """
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await p3_simulation_engine._process_day(ctx)
+        assert ctx.o2c_cycles_completed == 7
+
+    @pytest.mark.asyncio
+    async def test_p2p_generator_error_handled_gracefully(
+        self,
+        simulation_config: SimulationConfig,
+        mock_time_controller: AsyncMock,
+        mock_external_world_manager: AsyncMock,
+        mock_workflow_orchestrator: AsyncMock,
+        mock_event_bus: AsyncMock,
+        mock_agent_registry: MagicMock,
+        simulation_metrics: SimulationMetrics,
+    ) -> None:
+        """P2P generator exception does not crash _process_day — error is caught and logged."""
+        failing_gen = AsyncMock()
+        failing_gen.generate = AsyncMock(side_effect=RuntimeError("P2P generation failed"))
+        p2p_gens = {"failing_po_gen": failing_gen}
+
+        engine = SimulationEngine(
+            config=simulation_config,
+            time_controller=mock_time_controller,
+            external_world_manager=mock_external_world_manager,
+            workflow_orchestrator=mock_workflow_orchestrator,
+            event_bus=mock_event_bus,
+            agent_registry=mock_agent_registry,
+            metrics=simulation_metrics,
+            p2p_generators=p2p_gens,
+        )
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        # Should NOT raise — error is caught internally
+        await engine._process_day(ctx)
+        # Day completes normally, P2P cycles = 0 since gen failed
+        assert ctx.p2p_cycles_completed == 0
+
+    @pytest.mark.asyncio
+    async def test_o2c_generator_error_handled_gracefully(
+        self,
+        simulation_config: SimulationConfig,
+        mock_time_controller: AsyncMock,
+        mock_external_world_manager: AsyncMock,
+        mock_workflow_orchestrator: AsyncMock,
+        mock_event_bus: AsyncMock,
+        mock_agent_registry: MagicMock,
+        simulation_metrics: SimulationMetrics,
+    ) -> None:
+        """O2C generator exception does not crash _process_day — error is caught and logged."""
+        failing_gen = AsyncMock()
+        failing_gen.generate = AsyncMock(side_effect=RuntimeError("O2C generation failed"))
+        o2c_gens = {"failing_so_gen": failing_gen}
+
+        engine = SimulationEngine(
+            config=simulation_config,
+            time_controller=mock_time_controller,
+            external_world_manager=mock_external_world_manager,
+            workflow_orchestrator=mock_workflow_orchestrator,
+            event_bus=mock_event_bus,
+            agent_registry=mock_agent_registry,
+            metrics=simulation_metrics,
+            o2c_generators=o2c_gens,
+        )
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await engine._process_day(ctx)
+        assert ctx.o2c_cycles_completed == 0
+
+    @pytest.mark.asyncio
+    async def test_no_p2p_generators_skips_generation(
+        self,
+        simulation_config: SimulationConfig,
+        mock_time_controller: AsyncMock,
+        mock_external_world_manager: AsyncMock,
+        mock_workflow_orchestrator: AsyncMock,
+        mock_event_bus: AsyncMock,
+        mock_agent_registry: MagicMock,
+        simulation_metrics: SimulationMetrics,
+    ) -> None:
+        """When p2p_generators is None/empty, P2P generation is silently skipped."""
+        engine = SimulationEngine(
+            config=simulation_config,
+            time_controller=mock_time_controller,
+            external_world_manager=mock_external_world_manager,
+            workflow_orchestrator=mock_workflow_orchestrator,
+            event_bus=mock_event_bus,
+            agent_registry=mock_agent_registry,
+            metrics=simulation_metrics,
+            p2p_generators=None,
+        )
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await engine._process_day(ctx)
+        # P2P cycles remain at default 0
+        assert ctx.p2p_cycles_completed == 0
+
+
+# ============================================================================
+# Phase P3-3: Discrepancy Injection Pipeline Tests (Step 3 Extension)
+# ============================================================================
+
+
+class TestP3DiscrepancyInjection:
+    """Tests for discrepancy injection during Step 3 of _process_day().
+
+    Verifies:
+    - DiscrepancyInjector.process_batch() is called during _process_day
+    - day_context.discrepancies_injected and ground_truths_created are updated
+    - Injection errors are caught and logged, not propagated
+    - Injection is skipped when discrepancy_injector is None
+    """
+
+    @pytest.mark.asyncio
+    async def test_discrepancy_injector_invoked(
+        self,
+        p3_simulation_engine: SimulationEngine,
+        mock_discrepancy_injector: AsyncMock,
+    ) -> None:
+        """DiscrepancyInjector.process_batch is called during _process_day."""
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await p3_simulation_engine._process_day(ctx)
+        mock_discrepancy_injector.process_batch.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_discrepancy_counts_updated(
+        self,
+        p3_simulation_engine: SimulationEngine,
+    ) -> None:
+        """day_context discrepancy metrics are updated from injection results."""
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await p3_simulation_engine._process_day(ctx)
+        # Mock injector returns: discrepancies_injected=2, ground_truths_created=2
+        assert ctx.discrepancies_injected == 2
+        assert ctx.ground_truths_created == 2
+
+    @pytest.mark.asyncio
+    async def test_discrepancy_injection_error_handled(
+        self,
+        simulation_config: SimulationConfig,
+        mock_time_controller: AsyncMock,
+        mock_external_world_manager: AsyncMock,
+        mock_workflow_orchestrator: AsyncMock,
+        mock_event_bus: AsyncMock,
+        mock_agent_registry: MagicMock,
+        simulation_metrics: SimulationMetrics,
+    ) -> None:
+        """DiscrepancyInjector error does not crash _process_day."""
+        failing_injector = AsyncMock()
+        failing_injector.process_batch = AsyncMock(
+            side_effect=RuntimeError("Injection failed")
+        )
+        engine = SimulationEngine(
+            config=simulation_config,
+            time_controller=mock_time_controller,
+            external_world_manager=mock_external_world_manager,
+            workflow_orchestrator=mock_workflow_orchestrator,
+            event_bus=mock_event_bus,
+            agent_registry=mock_agent_registry,
+            metrics=simulation_metrics,
+            discrepancy_injector=failing_injector,
+        )
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await engine._process_day(ctx)
+        # Day completes, discrepancies remain at 0
+        assert ctx.discrepancies_injected == 0
+
+    @pytest.mark.asyncio
+    async def test_no_injector_skips_injection(
+        self,
+        simulation_config: SimulationConfig,
+        mock_time_controller: AsyncMock,
+        mock_external_world_manager: AsyncMock,
+        mock_workflow_orchestrator: AsyncMock,
+        mock_event_bus: AsyncMock,
+        mock_agent_registry: MagicMock,
+        simulation_metrics: SimulationMetrics,
+    ) -> None:
+        """When discrepancy_injector is None, injection is silently skipped."""
+        engine = SimulationEngine(
+            config=simulation_config,
+            time_controller=mock_time_controller,
+            external_world_manager=mock_external_world_manager,
+            workflow_orchestrator=mock_workflow_orchestrator,
+            event_bus=mock_event_bus,
+            agent_registry=mock_agent_registry,
+            metrics=simulation_metrics,
+        )
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await engine._process_day(ctx)
+        assert ctx.discrepancies_injected == 0
+
+
+# ============================================================================
+# Phase P3-4: Rework Loop Validation Tests (Step 4.5)
+# ============================================================================
+
+
+class TestP3ReworkLoop:
+    """Tests for rework loop validation after agent processing.
+
+    Verifies:
+    - ReworkLoopEngine.process_day() is called during _process_day
+    - day_context rework metrics (attempts, successes, escalations) are updated
+    - Rework errors are caught and logged, not propagated
+    - Rework is skipped when rework_loop_engine is None
+    """
+
+    @pytest.mark.asyncio
+    async def test_rework_loop_invoked(
+        self,
+        p3_simulation_engine: SimulationEngine,
+        mock_rework_loop_engine: AsyncMock,
+    ) -> None:
+        """ReworkLoopEngine.process_day() is called during _process_day."""
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await p3_simulation_engine._process_day(ctx)
+        mock_rework_loop_engine.process_day.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_rework_metrics_updated(
+        self,
+        p3_simulation_engine: SimulationEngine,
+    ) -> None:
+        """day_context rework metrics are updated from rework loop results."""
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await p3_simulation_engine._process_day(ctx)
+        # Mock rework engine returns: attempts=3, successes=2, escalations=1
+        assert ctx.rework_attempts == 3
+        assert ctx.rework_successes == 2
+        assert ctx.rework_escalations == 1
+
+    @pytest.mark.asyncio
+    async def test_rework_loop_error_handled(
+        self,
+        simulation_config: SimulationConfig,
+        mock_time_controller: AsyncMock,
+        mock_external_world_manager: AsyncMock,
+        mock_workflow_orchestrator: AsyncMock,
+        mock_event_bus: AsyncMock,
+        mock_agent_registry: MagicMock,
+        simulation_metrics: SimulationMetrics,
+    ) -> None:
+        """ReworkLoopEngine error does not crash _process_day."""
+        failing_engine = AsyncMock()
+        failing_engine.process_day = AsyncMock(
+            side_effect=RuntimeError("Rework failed")
+        )
+        engine = SimulationEngine(
+            config=simulation_config,
+            time_controller=mock_time_controller,
+            external_world_manager=mock_external_world_manager,
+            workflow_orchestrator=mock_workflow_orchestrator,
+            event_bus=mock_event_bus,
+            agent_registry=mock_agent_registry,
+            metrics=simulation_metrics,
+            rework_loop_engine=failing_engine,
+        )
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await engine._process_day(ctx)
+        assert ctx.rework_attempts == 0
+
+    @pytest.mark.asyncio
+    async def test_no_rework_engine_skips_rework(
+        self,
+        simulation_config: SimulationConfig,
+        mock_time_controller: AsyncMock,
+        mock_external_world_manager: AsyncMock,
+        mock_workflow_orchestrator: AsyncMock,
+        mock_event_bus: AsyncMock,
+        mock_agent_registry: MagicMock,
+        simulation_metrics: SimulationMetrics,
+    ) -> None:
+        """When rework_loop_engine is None, rework is silently skipped."""
+        engine = SimulationEngine(
+            config=simulation_config,
+            time_controller=mock_time_controller,
+            external_world_manager=mock_external_world_manager,
+            workflow_orchestrator=mock_workflow_orchestrator,
+            event_bus=mock_event_bus,
+            agent_registry=mock_agent_registry,
+            metrics=simulation_metrics,
+        )
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await engine._process_day(ctx)
+        assert ctx.rework_attempts == 0
+        assert ctx.rework_successes == 0
+        assert ctx.rework_escalations == 0
+
+
+# ============================================================================
+# Phase P3-5: GL Posting Integration Tests
+# ============================================================================
+
+
+class TestP3GLPosting:
+    """Tests for GL posting engine invocation during _process_day().
+
+    Verifies:
+    - GLPostingEngine.post_pending_entries() is called during _process_day
+    - day_context.gl_entries_posted is updated from posting results
+    - GL posting errors are caught and logged, not propagated
+    - GL posting is skipped when gl_posting_engine is None
+    """
+
+    @pytest.mark.asyncio
+    async def test_gl_engine_invoked(
+        self,
+        p3_simulation_engine: SimulationEngine,
+        mock_gl_posting_engine: AsyncMock,
+    ) -> None:
+        """GLPostingEngine.post_pending_entries() is called during _process_day."""
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await p3_simulation_engine._process_day(ctx)
+        mock_gl_posting_engine.post_pending_entries.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_gl_entries_counted(
+        self,
+        p3_simulation_engine: SimulationEngine,
+    ) -> None:
+        """day_context.gl_entries_posted is updated from GL engine results."""
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await p3_simulation_engine._process_day(ctx)
+        # Mock GL engine returns entries_posted=5
+        assert ctx.gl_entries_posted == 5
+
+    @pytest.mark.asyncio
+    async def test_gl_posting_error_handled(
+        self,
+        simulation_config: SimulationConfig,
+        mock_time_controller: AsyncMock,
+        mock_external_world_manager: AsyncMock,
+        mock_workflow_orchestrator: AsyncMock,
+        mock_event_bus: AsyncMock,
+        mock_agent_registry: MagicMock,
+        simulation_metrics: SimulationMetrics,
+    ) -> None:
+        """GL posting error does not crash _process_day."""
+        failing_gl = AsyncMock()
+        failing_gl.post_pending_entries = AsyncMock(
+            side_effect=RuntimeError("GL posting failed - rollback")
+        )
+        engine = SimulationEngine(
+            config=simulation_config,
+            time_controller=mock_time_controller,
+            external_world_manager=mock_external_world_manager,
+            workflow_orchestrator=mock_workflow_orchestrator,
+            event_bus=mock_event_bus,
+            agent_registry=mock_agent_registry,
+            metrics=simulation_metrics,
+            gl_posting_engine=failing_gl,
+        )
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await engine._process_day(ctx)
+        assert ctx.gl_entries_posted == 0
+
+    @pytest.mark.asyncio
+    async def test_no_gl_engine_skips_posting(
+        self,
+        simulation_config: SimulationConfig,
+        mock_time_controller: AsyncMock,
+        mock_external_world_manager: AsyncMock,
+        mock_workflow_orchestrator: AsyncMock,
+        mock_event_bus: AsyncMock,
+        mock_agent_registry: MagicMock,
+        simulation_metrics: SimulationMetrics,
+    ) -> None:
+        """When gl_posting_engine is None, GL posting is silently skipped."""
+        engine = SimulationEngine(
+            config=simulation_config,
+            time_controller=mock_time_controller,
+            external_world_manager=mock_external_world_manager,
+            workflow_orchestrator=mock_workflow_orchestrator,
+            event_bus=mock_event_bus,
+            agent_registry=mock_agent_registry,
+            metrics=simulation_metrics,
+        )
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await engine._process_day(ctx)
+        assert ctx.gl_entries_posted == 0
+
+
+# ============================================================================
+# Phase P3-6: P3 Daily Metrics Tracking Tests
+# ============================================================================
+
+
+class TestP3DailyMetrics:
+    """Tests for P3-specific daily metrics tracked via SimulationMetrics.
+
+    Verifies:
+    - DayContext P3 fields are properly recorded in DailyMetricsSnapshot
+    - SimulationMetrics cumulative P3 counters accumulate correctly
+    - P3 fields appear in daily_summary log entries
+    - P3 fields appear in DayComplete event payload
+    """
+
+    @pytest.mark.asyncio
+    async def test_p3_metrics_in_daily_snapshot(
+        self,
+        p3_simulation_engine: SimulationEngine,
+    ) -> None:
+        """P3 metric fields are recorded in DailyMetricsSnapshot after run()."""
+        result = await asyncio.wait_for(p3_simulation_engine.run(), timeout=10.0)
+        snaps = p3_simulation_engine._metrics.get_daily_snapshots()
+        assert len(snaps) > 0
+        first_snap = snaps[0]
+        # These attributes should exist on the snapshot from the P3 update
+        assert hasattr(first_snap, "p2p_cycles_completed")
+        assert hasattr(first_snap, "o2c_cycles_completed")
+        assert hasattr(first_snap, "gl_entries_posted")
+        assert hasattr(first_snap, "discrepancies_injected")
+        assert hasattr(first_snap, "rework_attempts")
+
+    @pytest.mark.asyncio
+    async def test_p3_cumulative_counters(
+        self,
+        p3_simulation_engine: SimulationEngine,
+    ) -> None:
+        """SimulationMetrics accumulates P3 counters across multiple days."""
+        await asyncio.wait_for(p3_simulation_engine.run(), timeout=10.0)
+        m = p3_simulation_engine._metrics
+        # After multi-day run, cumulative P3 counters should be > 0
+        assert m.total_p2p_cycles_completed > 0
+        assert m.total_o2c_cycles_completed > 0
+        assert m.total_gl_entries_posted > 0
+        assert m.total_discrepancies_injected > 0
+        assert m.total_rework_attempts > 0
+
+    @pytest.mark.asyncio
+    async def test_p3_metrics_in_daily_summary_log(
+        self,
+        p3_simulation_engine: SimulationEngine,
+    ) -> None:
+        """P3 metric fields appear in the daily_summary structured log entry."""
+        with structlog.testing.capture_logs() as captured:
+            ctx = DayContext(
+                simulation_date=date(2024, 1, 2),
+                transactions_generated=10,
+                agents_active=5,
+                average_agent_utilization=0.5,
+                llm_requests=3,
+                llm_cost_usd=0.10,
+                day_duration_seconds=18.0,
+                p2p_cycles_completed=3,
+                o2c_cycles_completed=4,
+                gl_entries_posted=7,
+                discrepancies_injected=1,
+                rework_attempts=2,
+                rework_successes=1,
+            )
+            p3_simulation_engine._log_daily_summary(ctx)
+        daily_entries = [e for e in captured if e.get("event") == "daily_summary"]
+        assert len(daily_entries) >= 1
+        entry = daily_entries[0]
+        # P3 fields should be in log either as direct keys or nested in summary dict
+        entry_str = str(entry)
+        assert "p2p_cycles" in entry_str or "p2p_cycles_completed" in entry_str
+
+    @pytest.mark.asyncio
+    async def test_p3_metrics_in_get_summary(
+        self,
+        p3_simulation_engine: SimulationEngine,
+    ) -> None:
+        """get_summary() includes P3 cumulative totals."""
+        await asyncio.wait_for(p3_simulation_engine.run(), timeout=10.0)
+        summary = p3_simulation_engine._metrics.get_summary()
+        assert "total_p2p_cycles_completed" in summary
+        assert "total_o2c_cycles_completed" in summary
+        assert "total_gl_entries_posted" in summary
+        assert "total_discrepancies_injected" in summary
+        assert "total_rework_attempts" in summary
+
+    def test_p3_day_context_defaults(self) -> None:
+        """New P3 DayContext fields default to 0 or empty lists."""
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        assert ctx.p2p_cycles_completed == 0
+        assert ctx.o2c_cycles_completed == 0
+        assert ctx.gl_entries_posted == 0
+        assert ctx.discrepancies_injected == 0
+        assert ctx.ground_truths_created == 0
+        assert ctx.rework_attempts == 0
+        assert ctx.rework_successes == 0
+        assert ctx.rework_escalations == 0
+        assert ctx.period_closes_completed == 0
+        assert ctx.trial_balance_checks_passed == 0
+        assert ctx.open_purchase_orders == []
+        assert ctx.pending_vendor_invoices == []
+        assert ctx.open_sales_orders == []
+        assert ctx.pending_customer_invoices == []
+        assert ctx.unposted_gl_entries == []
+        assert ctx.active_rework_items == []
+
+    def test_p3_day_context_to_daily_summary_dict_includes_p3_fields(self) -> None:
+        """to_daily_summary_dict() includes P3 metric fields."""
+        ctx = DayContext(
+            simulation_date=date(2024, 1, 2),
+            p2p_cycles_completed=5,
+            o2c_cycles_completed=8,
+            gl_entries_posted=13,
+            discrepancies_injected=2,
+            rework_attempts=3,
+        )
+        summary = ctx.to_daily_summary_dict()
+        assert summary["p2p_cycles_completed"] == 5
+        assert summary["o2c_cycles_completed"] == 8
+        assert summary["gl_entries_posted"] == 13
+        assert summary["discrepancies_injected"] == 2
+        assert summary["rework_attempts"] == 3
+
+
+# ============================================================================
+# Phase P3-7: Period Close Triggering Tests
+# ============================================================================
+
+
+class TestP3PeriodClose:
+    """Tests for period close processing during simulation.
+
+    Verifies:
+    - PeriodCloseManager.execute_period_close() is called when period is closing
+    - day_context.period_closes_completed and trial_balance_checks_passed are updated
+    - Period close is skipped when period_close_manager is None
+    - Period close is only triggered when is_period_closing() returns True
+    """
+
+    @pytest.mark.asyncio
+    async def test_period_close_triggered_when_period_closing(
+        self,
+        simulation_config: SimulationConfig,
+        mock_time_controller: AsyncMock,
+        mock_external_world_manager: AsyncMock,
+        mock_workflow_orchestrator: AsyncMock,
+        mock_event_bus: AsyncMock,
+        mock_agent_registry: MagicMock,
+        simulation_metrics: SimulationMetrics,
+        mock_period_close_manager: AsyncMock,
+    ) -> None:
+        """PeriodCloseManager is invoked when DayContext.is_period_closing() is True."""
+        engine = SimulationEngine(
+            config=simulation_config,
+            time_controller=mock_time_controller,
+            external_world_manager=mock_external_world_manager,
+            workflow_orchestrator=mock_workflow_orchestrator,
+            event_bus=mock_event_bus,
+            agent_registry=mock_agent_registry,
+            metrics=simulation_metrics,
+            period_close_manager=mock_period_close_manager,
+        )
+        # Create a DayContext with period_status="closing"
+        ctx = DayContext(
+            simulation_date=date(2024, 1, 31),
+            fiscal_period=FiscalPeriodInfo(
+                fiscal_year=2024,
+                fiscal_month=1,
+                fiscal_quarter=1,
+                period_status="closing",
+            ),
+        )
+        await engine._process_day(ctx)
+        # PeriodCloseManager should have been called since period is closing
+        mock_period_close_manager.execute_period_close.assert_called()
+        assert ctx.period_closes_completed == 1
+
+    @pytest.mark.asyncio
+    async def test_period_close_not_triggered_when_open(
+        self,
+        simulation_config: SimulationConfig,
+        mock_time_controller: AsyncMock,
+        mock_external_world_manager: AsyncMock,
+        mock_workflow_orchestrator: AsyncMock,
+        mock_event_bus: AsyncMock,
+        mock_agent_registry: MagicMock,
+        simulation_metrics: SimulationMetrics,
+        mock_period_close_manager: AsyncMock,
+    ) -> None:
+        """PeriodCloseManager is NOT invoked when period_status='open'."""
+        engine = SimulationEngine(
+            config=simulation_config,
+            time_controller=mock_time_controller,
+            external_world_manager=mock_external_world_manager,
+            workflow_orchestrator=mock_workflow_orchestrator,
+            event_bus=mock_event_bus,
+            agent_registry=mock_agent_registry,
+            metrics=simulation_metrics,
+            period_close_manager=mock_period_close_manager,
+        )
+        ctx = DayContext(
+            simulation_date=date(2024, 1, 15),
+            fiscal_period=FiscalPeriodInfo(
+                period_status="open",
+            ),
+        )
+        await engine._process_day(ctx)
+        mock_period_close_manager.execute_period_close.assert_not_called()
+        assert ctx.period_closes_completed == 0
+
+    @pytest.mark.asyncio
+    async def test_period_close_error_handled(
+        self,
+        simulation_config: SimulationConfig,
+        mock_time_controller: AsyncMock,
+        mock_external_world_manager: AsyncMock,
+        mock_workflow_orchestrator: AsyncMock,
+        mock_event_bus: AsyncMock,
+        mock_agent_registry: MagicMock,
+        simulation_metrics: SimulationMetrics,
+    ) -> None:
+        """PeriodCloseManager error does not crash _process_day."""
+        failing_manager = AsyncMock()
+        failing_manager.execute_period_close = AsyncMock(
+            side_effect=RuntimeError("Period close failed")
+        )
+        engine = SimulationEngine(
+            config=simulation_config,
+            time_controller=mock_time_controller,
+            external_world_manager=mock_external_world_manager,
+            workflow_orchestrator=mock_workflow_orchestrator,
+            event_bus=mock_event_bus,
+            agent_registry=mock_agent_registry,
+            metrics=simulation_metrics,
+            period_close_manager=failing_manager,
+        )
+        ctx = DayContext(
+            simulation_date=date(2024, 1, 31),
+            fiscal_period=FiscalPeriodInfo(period_status="closing"),
+        )
+        await engine._process_day(ctx)
+        # Day completes despite error
+        assert ctx.period_closes_completed == 0
+
+    @pytest.mark.asyncio
+    async def test_no_period_close_manager_skips_close(
+        self,
+        simulation_config: SimulationConfig,
+        mock_time_controller: AsyncMock,
+        mock_external_world_manager: AsyncMock,
+        mock_workflow_orchestrator: AsyncMock,
+        mock_event_bus: AsyncMock,
+        mock_agent_registry: MagicMock,
+        simulation_metrics: SimulationMetrics,
+    ) -> None:
+        """When period_close_manager is None, period close is silently skipped."""
+        engine = SimulationEngine(
+            config=simulation_config,
+            time_controller=mock_time_controller,
+            external_world_manager=mock_external_world_manager,
+            workflow_orchestrator=mock_workflow_orchestrator,
+            event_bus=mock_event_bus,
+            agent_registry=mock_agent_registry,
+            metrics=simulation_metrics,
+        )
+        ctx = DayContext(
+            simulation_date=date(2024, 1, 31),
+            fiscal_period=FiscalPeriodInfo(period_status="closing"),
+        )
+        await engine._process_day(ctx)
+        assert ctx.period_closes_completed == 0
+
+
+# ============================================================================
+# Phase P3-8: P3 Health Check Tests
+# ============================================================================
+
+
+class TestP3HealthCheck:
+    """Tests for P3 subsystem health reporting.
+
+    Verifies:
+    - health_check() reports P3 subsystems when injected
+    - health_check() reports P3 subsystems as not_injected when None
+    """
+
+    @pytest.mark.asyncio
+    async def test_health_check_p3_subsystems_available(
+        self,
+        p3_simulation_engine: SimulationEngine,
+    ) -> None:
+        """P3 subsystems reported as available when all are injected."""
+        health = await p3_simulation_engine.health_check()
+        subs = health["subsystems"]
+        assert subs["gl_posting_engine"]["available"] is True
+        assert subs["gl_posting_engine"]["status"] == "ok"
+        assert subs["discrepancy_injector"]["available"] is True
+        assert subs["discrepancy_injector"]["status"] == "ok"
+        assert subs["rework_loop_engine"]["available"] is True
+        assert subs["rework_loop_engine"]["status"] == "ok"
+        assert subs["period_close_manager"]["available"] is True
+        assert subs["period_close_manager"]["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_health_check_p3_subsystems_not_injected(
+        self,
+        simulation_config: SimulationConfig,
+    ) -> None:
+        """P3 subsystems reported as not_injected when None."""
+        engine = SimulationEngine(config=simulation_config)
+        health = await engine.health_check()
+        subs = health["subsystems"]
+        assert subs["gl_posting_engine"]["status"] == "not_injected"
+        assert subs["gl_posting_engine"]["available"] is False
+        assert subs["discrepancy_injector"]["status"] == "not_injected"
+        assert subs["rework_loop_engine"]["status"] == "not_injected"
+        assert subs["period_close_manager"]["status"] == "not_injected"
+
+
+# ============================================================================
+# Phase P3-9: P3 DayContext Extended Field Tests
+# ============================================================================
+
+
+class TestP3DayContextFields:
+    """Tests for P3-specific DayContext fields and computed properties.
+
+    Verifies:
+    - All P3 workflow state List fields accept and store data
+    - All P3 metric counter fields enforce ge=0 constraint
+    - update_from_p3_metrics() helper works correctly
+    - rework_success_rate, ground_truth_coverage, total_p3_transactions computed properties
+    """
+
+    def test_p3_workflow_state_lists(self) -> None:
+        """P3 List fields can store items."""
+        ctx = DayContext(
+            simulation_date=date(2024, 1, 2),
+            open_purchase_orders=[{"po_id": "PO-001"}],
+            pending_vendor_invoices=[{"inv_id": "INV-001"}],
+            open_sales_orders=[{"so_id": "SO-001"}],
+        )
+        assert len(ctx.open_purchase_orders) == 1
+        assert len(ctx.pending_vendor_invoices) == 1
+        assert len(ctx.open_sales_orders) == 1
+
+    def test_p3_metric_non_negative_constraints(self) -> None:
+        """P3 metric int fields reject negative values (ge=0)."""
+        with pytest.raises(ValidationError):
+            DayContext(simulation_date=date(2024, 1, 2), p2p_cycles_completed=-1)
+        with pytest.raises(ValidationError):
+            DayContext(simulation_date=date(2024, 1, 2), gl_entries_posted=-1)
+        with pytest.raises(ValidationError):
+            DayContext(simulation_date=date(2024, 1, 2), rework_attempts=-1)
+
+    def test_update_from_p3_metrics(self) -> None:
+        """update_from_p3_metrics() batch helper sets all P3 fields."""
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        ctx.update_from_p3_metrics(
+            p2p_cycles=5,
+            o2c_cycles=8,
+            gl_entries=13,
+            discrepancies=2,
+            ground_truths=2,
+            rework_attempts=3,
+            rework_successes=2,
+            rework_escalations=1,
+            period_closes=1,
+            trial_balance_passed=1,
+        )
+        assert ctx.p2p_cycles_completed == 5
+        assert ctx.o2c_cycles_completed == 8
+        assert ctx.gl_entries_posted == 13
+        assert ctx.discrepancies_injected == 2
+        assert ctx.ground_truths_created == 2
+        assert ctx.rework_attempts == 3
+        assert ctx.rework_successes == 2
+        assert ctx.rework_escalations == 1
+        assert ctx.period_closes_completed == 1
+        assert ctx.trial_balance_checks_passed == 1
+
+    def test_rework_success_rate_property(self) -> None:
+        """rework_success_rate computed property."""
+        ctx = DayContext(
+            simulation_date=date(2024, 1, 2),
+            rework_attempts=10,
+            rework_successes=8,
+        )
+        assert ctx.rework_success_rate == pytest.approx(0.8)
+
+    def test_rework_success_rate_zero_attempts(self) -> None:
+        """rework_success_rate is 0.0 when no attempts made."""
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        assert ctx.rework_success_rate == 0.0
+
+    def test_ground_truth_coverage_property(self) -> None:
+        """ground_truth_coverage computed property."""
+        ctx = DayContext(
+            simulation_date=date(2024, 1, 2),
+            discrepancies_injected=10,
+            ground_truths_created=10,
+        )
+        assert ctx.ground_truth_coverage == pytest.approx(1.0)
+
+    def test_total_p3_transactions_property(self) -> None:
+        """total_p3_transactions returns sum of P2P + O2C cycles."""
+        ctx = DayContext(
+            simulation_date=date(2024, 1, 2),
+            p2p_cycles_completed=5,
+            o2c_cycles_completed=8,
+        )
+        assert ctx.total_p3_transactions == 13
+
+
+# ============================================================================
+# Phase P3-10: P3 Multi-Day Integration Tests
+# ============================================================================
+
+
+class TestP3MultiDayIntegration:
+    """Integration-style tests for P3 across multi-day simulation runs.
+
+    Verifies:
+    - P3 metrics accumulate correctly across multiple days
+    - P3 pipeline order: Generate(Step2) -> Discrepancy(Step3) -> Rework(Step4.5)
+    - DailyMetricsSnapshot contains P3 data for each day
+    """
+
+    @pytest.mark.asyncio
+    async def test_p3_multi_day_accumulation(
+        self,
+        p3_simulation_engine: SimulationEngine,
+    ) -> None:
+        """P3 cumulative counters accumulate across multiple simulated days."""
+        result = await asyncio.wait_for(p3_simulation_engine.run(), timeout=10.0)
+        days = result["days_processed"]
+        assert days > 1, "Multi-day run required for accumulation test"
+        m = p3_simulation_engine._metrics
+        # Each day produces P3 metrics — cumulative must be >= single day values
+        # P2P: each day produces 5 cycles (3 + 2 from 2 generators)
+        assert m.total_p2p_cycles_completed >= 5
+        # O2C: each day produces 7 cycles (4 + 3 from 2 generators)
+        assert m.total_o2c_cycles_completed >= 7
+
+    @pytest.mark.asyncio
+    async def test_p3_snapshot_per_day(
+        self,
+        p3_simulation_engine: SimulationEngine,
+    ) -> None:
+        """Each daily snapshot contains P3 metric data."""
+        await asyncio.wait_for(p3_simulation_engine.run(), timeout=10.0)
+        snaps = p3_simulation_engine._metrics.get_daily_snapshots()
+        for snap in snaps:
+            assert snap.p2p_cycles_completed >= 0
+            assert snap.o2c_cycles_completed >= 0
+            assert snap.gl_entries_posted >= 0
+
+    @pytest.mark.asyncio
+    async def test_p3_pipeline_order(
+        self,
+        simulation_config: SimulationConfig,
+        mock_time_controller: AsyncMock,
+        mock_external_world_manager: AsyncMock,
+        mock_workflow_orchestrator: AsyncMock,
+        mock_event_bus: AsyncMock,
+        mock_agent_registry: MagicMock,
+        simulation_metrics: SimulationMetrics,
+    ) -> None:
+        """P3 pipeline steps execute in correct order: Generate -> Discrepancy -> Rework."""
+        call_order: List[str] = []
+
+        p2p_gen = AsyncMock()
+
+        async def track_p2p(*a, **kw):
+            call_order.append("P2P_Generate")
+            return {"cycles_completed": 1, "transactions_generated": 4}
+
+        p2p_gen.generate = AsyncMock(side_effect=track_p2p)
+
+        disc_injector = AsyncMock()
+
+        async def track_disc(*a, **kw):
+            call_order.append("Discrepancy_Inject")
+            return {"discrepancies_injected": 0, "ground_truths_created": 0, "types_injected": {}}
+
+        disc_injector.process_batch = AsyncMock(side_effect=track_disc)
+
+        rework_eng = AsyncMock()
+
+        async def track_rework(*a, **kw):
+            call_order.append("Rework_Loop")
+            return {"attempts": 0, "successes": 0, "escalations": 0}
+
+        rework_eng.process_day = AsyncMock(side_effect=track_rework)
+
+        engine = SimulationEngine(
+            config=simulation_config,
+            time_controller=mock_time_controller,
+            external_world_manager=mock_external_world_manager,
+            workflow_orchestrator=mock_workflow_orchestrator,
+            event_bus=mock_event_bus,
+            agent_registry=mock_agent_registry,
+            metrics=simulation_metrics,
+            p2p_generators={"po_gen": p2p_gen},
+            discrepancy_injector=disc_injector,
+            rework_loop_engine=rework_eng,
+        )
+        ctx = DayContext(simulation_date=date(2024, 1, 2))
+        await engine._process_day(ctx)
+
+        # Verify ordering: P2P generation before discrepancy injection before rework
+        if "P2P_Generate" in call_order and "Discrepancy_Inject" in call_order:
+            gen_idx = call_order.index("P2P_Generate")
+            disc_idx = call_order.index("Discrepancy_Inject")
+            assert gen_idx < disc_idx, "P2P generation must precede discrepancy injection"
+        if "Discrepancy_Inject" in call_order and "Rework_Loop" in call_order:
+            disc_idx = call_order.index("Discrepancy_Inject")
+            rework_idx = call_order.index("Rework_Loop")
+            assert disc_idx < rework_idx, "Discrepancy injection must precede rework loop"
