@@ -6,892 +6,914 @@
 
 ### 0.1.1 Core Feature Objective
 
-Based on the prompt, the Blitzy platform understands that the new feature requirement is to **build a complete AI-powered Agent & Orchestration Engine** (Project 2 of the Synthetic ERP Data Generation Platform) from an empty repository, implementing seven interconnected subsystems that simulate realistic ERP employee behavior through autonomous, memory-equipped, LLM-augmented agents.
+Based on the prompt, the Blitzy platform understands that the new feature requirement is to **build a complete end-to-end transaction generation system for the Synthetic ERP Data Generation Platform (Project 3: Transaction Workflows & Discrepancies)**. This system builds upon the existing Project 2 Agent & Orchestration Engine codebase and introduces six major functional domains:
 
-The core feature requirements, restated with enhanced clarity, are:
+- **Procure-to-Pay (P2P) Transaction Engine** — A five-class pipeline generating complete P2P cycles: Purchase Order → Goods Receipt → Vendor Invoice (with three-way matching) → Vendor Payment, producing all artifacts and General Ledger postings at each step
+- **Order-to-Cash (O2C) Transaction Engine** — A four-class pipeline generating complete O2C cycles: Sales Order → Shipment → Customer Invoice → Customer Payment, with credit checks, payment allocation (FIFO), and GL postings
+- **General Ledger Integration** — A posting engine that writes balanced journal entries (DR = CR within $0.01) for every transaction, maintains real-time account balances, supports accrual generation (GRNI, shipped-not-invoiced), and enforces continuous trial balance validation
+- **Discrepancy Injection System** — A configurable injector implementing 35+ discrepancy types (15 P2P, 10 O2C, 5 GL, 5 Control) with ground truth label generation, parameter-bounded injection, and Easy (70%) / Medium (30%) difficulty distribution
+- **Intelligent Rework Loop** — An autonomous error correction system that classifies validation failures, selects fix scenarios from a catalog, applies corrections (max 3 attempts per transaction), and escalates unresolvable errors for human review
+- **Period Close Processing** — A period-end manager generating accruals, deferrals, depreciation entries, recurring journal entries, account reconciliations, and trial balance validation before closing fiscal periods
 
-- **F-001 — Agent System**: Create an abstract `BaseAgent` framework with personality traits (thoroughness, risk_tolerance, efficiency, compliance — each 0.0 to 1.0), dual-stream memory (observation stream: max 1,000 entries; reflection stream: max 100 entries with semantic retrieval via `all-MiniLM-L6-v2`), a 14-action registry spanning procurement, AP, AR, and accounting functions, and 12 specialized agent subclasses across six ERP functional areas (AP, AR, Purchasing, Warehouse, Accounting, Financial Control)
-- **F-002 — LLM Integration**: Implement a unified `LLMClient` supporting Anthropic (Claude Sonnet 4, Claude Haiku 4), OpenAI (GPT-4 Turbo, GPT-3.5 Turbo), and Azure OpenAI, with a `PromptManager` (6 YAML-based template types, ~1,500 token context budget), `LLMQueue` (Redis Streams with XADD/XREADGROUP, batch size 10, priority levels), `LLMMonitor` (cost tracking, latency alerts), and hard budget cap of $100/month
-- **F-003 — Workflow Orchestration**: Build a `WorkflowOrchestrator` that maps transaction types to agent roles, a `TransactionOrchestrator` that tracks required artifacts per transaction type, and an `ApprovalSystem` enforcing monetary thresholds (e.g., PO > $100K requires CFO approval)
-- **F-004 — Time Controller**: Develop a `TimeController` with `BusinessCalendar` (US Federal holidays 2024–2026, 8AM–5PM working hours, lunch break) and `FiscalCalendar` (configurable fiscal year start, monthly/quarterly periods, open→closing→closed lifecycle)
-- **F-005 — External World Simulation**: Implement an `ExternalWorldManager` with tiered entity pools (Strategic 10%, Standard 30%, Transactional 60%), `BehaviorProfile` definitions for payment, order, and invoice dimensions, and simulators for customers, vendors, banks, and carriers
-- **F-006 — Statistical Models**: Create distribution models for amounts (log-normal, min $100, max $500K), payment timing (5-segment mixture model with Normal and LogNormal distributions), order frequency (Poisson with day-of-week effects), and entity selection (Pareto 80/20 weighted by spend history)
-- **F-007 — Event System**: Build a dual-mode `EventBus` (in-memory asyncio.Queue for <500 events/sec, optional Redis Pub/Sub for >5,000 events/sec), `EventStore` with JSONB persistence, 8 defined event types, and event replay for state reconstruction
+The system must satisfy **24 measurable success criteria** spanning four domains: Transaction Generation Performance (6 criteria), Discrepancy Injection (5 criteria), Financial Integrity (6 criteria), and Workflow Integrity (7 criteria).
 
 **Implicit requirements detected:**
 
-- A top-level `SimulationEngine` (the main loop) is required to orchestrate daily processing across all subsystems, though it is not assigned a standalone feature ID
-- A `DayContext` data structure is needed to pass daily simulation state between subsystems
-- `SimulationMetrics` for end-to-end performance tracking must be implemented
-- An `AgentRegistry` class is needed for centralized agent instance management
-- `WorkItem`, `WorkResult`, and `WorkflowInstance` data classes must be created as the work-processing contract between orchestration and agents
-- Configuration YAML files must be created for agent roles, approval thresholds, statistical parameters, and LLM settings
-- YAML prompt templates (6 templates) must be authored for each LLM decision type
-- Pydantic V2 models are required at all subsystem boundaries for input/output validation
+- Project 3 must consume Project 1's database session management (`from synthetic_erp.db.session import get_session`) and master data (customers, vendors, products, employees, Chart of Accounts) — this implies the Project 1 database layer and SQLAlchemy models are available as a dependency
+- Project 3 must consume Project 2's agent framework (`app/agents/`), workflow orchestrator (`app/orchestration/`), event bus (`app/events/`), statistical models (`app/statistical/`), and time controller — all via constructor injection
+- The `REQUIRED_ARTIFACTS` mapping in `app/orchestration/transaction_orchestrator.py` (lines 134–154) already defines artifact schemas for all 8 transaction types, which Project 3's generators must produce
+- The `ROLE_MAPPING` in `app/orchestration/workflow_orchestrator.py` already maps all 8 transaction types to eligible agent roles, which Project 3's generators must respect
+- The `EventType` enum in `app/events/event_types.py` already includes `DiscrepancyDetected` and `PeriodClosing`/`PeriodClosed` events that Project 3 must publish
+- The approval system in `config/workflows/approval_thresholds.yaml` defines PO ($5K/$25K/$100K) and vendor invoice ($10K/$50K/$100K) thresholds that P2P generators must enforce
+- The 12 specialized agents in `app/agents/specialized/` (AP Clerk, AP Manager, AR Clerk, AR Manager, Purchasing Agent, Purchasing Manager, Warehouse Clerk, Warehouse Manager, Accountant, Senior Accountant, Controller, CFO) will serve as decision-makers within the transaction workflows
 
 ### 0.1.2 Special Instructions and Constraints
 
-**Architectural Directives:**
+**Critical directives captured from the user's specification:**
 
-- Integrate with Project 1's existing REST API for all master data access — no direct database connections to upstream systems
-- Use Project 1's existing authentication system without modification (`README.md`, line 703)
-- Maintain read-only access pattern for all Project 1 interactions
-- All logging must use `structlog` to stdout only — no Prometheus, Grafana, or APM integration
-- The system must operate as a pure application-logic layer — no Docker, Kubernetes, Helm charts, or CI/CD pipelines
+- **Python 3.11.7 REQUIRED**: Standardizing on Python 3.11 for specific `Decimal` rounding behavior and `typing.Self` support; `decimal.getcontext().prec = 28` and `rounding = ROUND_HALF_UP` must be configured globally
+- **Database Session Pattern**: MUST use Project 1's session management — `from synthetic_erp.db.session import get_session` with `async with get_session() as session:` for all database operations
+- **DB Transaction Rollback**: If ANY step in a multi-step posting fails, FULLY ROLLBACK the transaction — atomicity is non-negotiable
+- **Overpayment Handling**: If Payment > Invoice, create Unapplied Cash record — do NOT allow negative invoice balances
+- **Concurrent Access**: Use `SELECT FOR UPDATE` when reading balances to prevent race conditions
+- **Payment Allocation**: FIFO (Oldest Invoice First) — not configurable
+- **Variance Calculation**: Line-Item Level (calculated per line, then summed)
+- **Accrual Method**: Straight-Line Daily (Total / Days in Period)
+- **No Hard Difficulty Discrepancies**: MVP focuses on Easy/Medium only; hard difficulty distribution is 0.00
+- **No External Workflow Engines**: Use in-memory code only — no Airflow, Prefect, or similar
+- **Single Company Focus**: No intercompany, consolidation, or multi-currency for MVP
+- **Structured JSON Logging**: ALL transaction operations MUST log in JSON format with the specified schema (timestamp, service_name, component, level, message, trace_id, simulation_id, etc.)
+- **Circuit Breaker Configuration**: GL posting (10 failures → open, 60s recovery), discrepancy injection (20 failures → open, 30s recovery), rework loop (50 failures → open, 120s recovery)
 
-**Performance Constraints:**
+**Architectural requirements:**
 
-- Agent creation: ≥ 50 agents/second
-- Decision latency: p95 < 5 seconds
-- Agent concurrency: ≥ 20 simultaneous agents
-- Workflow routing: < 500 milliseconds
-- Concurrent workflows: ≥ 100
-- LLM latency: < 3 seconds average
-- LLM cost: < $100/month
-- Business day advancement: < 30 seconds
-- Monthly generation (2,000 transactions): 4–8 hours
+- Follow Project 2's constructor injection pattern (ADR-003) — all subsystems receive dependencies through constructors
+- Use Pydantic V2 `BaseModel` for all data contracts at subsystem boundaries
+- Publish events via the existing `EventBus` (ADR-001) for cross-subsystem coordination
+- Use `structlog` for all logging (JSON to stdout only, no file handlers)
+- Use `tenacity` for retry patterns with configurable exponential backoff
+- Use seeded `random` (Python stdlib) generators for deterministic reproducibility
 
-**Timeout Constraints (from specification table):**
+**User Example — Exception Hierarchy:**
+```python
+class TransactionError(Exception):
+    """Base exception for all transaction errors."""
+class BalanceError(TransactionError):
+    """GL entry doesn't balance."""
+```
 
-- Agent work item (simple decision): 10 seconds
-- Agent work item (LLM decision): 30 seconds
-- Agent work item (complex workflow): 60 seconds
-- Agent work item (absolute max): 120 seconds
-- Memory add observation: 1 second
-- Memory retrieve relevant: 2 seconds
-- Event publish: 1 second
-- LLM completion request: 30 seconds
+**User Example — Retry Policy Table:**
 
-**Budget Controls:**
-
-- Monthly budget: $100 USD
-- Warning threshold: 80% ($80)
-- Block threshold: 100% ($100)
-- Rate limits: Claude Sonnet 4 at 50 req/min, Claude Haiku 4 at 100 req/min
-
-**Memory Constraints:**
-
-- Max 1,000 observations per agent (~500 bytes each)
-- Max 100 reflections per agent (~2 KB each)
-- Total memory per agent: ~700 KB
-- Max total agents: 50
-- Redis: 2 GB max with `allkeys-lru` eviction
-- LLM queue max size: 1,000 pending requests
+| Operation | Retry Attempts | Backoff Strategy | Timeout | Fallback |
+|-----------|---------------|-----------------|---------|----------|
+| P2P cycle generation | 2 | Linear (1s, 2s) | 60s | Skip transaction |
+| O2C cycle generation | 2 | Linear (1s, 2s) | 60s | Skip transaction |
+| GL posting | 3 | Exponential (1s, 2s, 4s) | 30s | Rollback transaction |
+| Three-way matching | 2 | Linear (500ms, 1s) | 10s | Mark as exception |
+| Discrepancy injection | 1 | None | 5s | Skip discrepancy |
+| Rework loop fix | 3 | Linear (1s, 2s, 3s) | 30s | Escalate to admin |
+| Period close | 1 | None | 300s | Halt, require manual intervention |
+| Balance update | 2 | Linear (500ms, 1s) | 10s | Rollback transaction |
 
 ### 0.1.3 Technical Interpretation
 
 These feature requirements translate to the following technical implementation strategy:
 
-- To **implement the Agent System (F-001)**, we will create the `app/agents/` module with `BaseAgent` (abstract class with async `run()` loop and `process_work_item()` contract), `AgentConfig` (Pydantic V2 model with trait definitions), `AgentState` (str Enum), `AgentMemory` (dual-stream with sentence-transformer embeddings), `ActionRegistry` (14 registered action types), `DecisionEngine` (4-layer hybrid: Statistical → LLM → Validation → Deterministic), and 12 specialized agent classes under `app/agents/specialized/`
-- To **implement LLM Integration (F-002)**, we will create the `app/llm/` module with `LLMClient` (unified async client wrapping `anthropic.AsyncAnthropic` and `openai.AsyncOpenAI`), `LLMQueue` (Redis Streams-backed with consumer groups), `LLMMonitor` (metrics tracking and alerting), `PromptManager` (YAML template loader with context assembly), and `ResponseParser` (structured JSON extraction from LLM output)
-- To **implement Workflow Orchestration (F-003)**, we will create `app/orchestration/workflow_orchestrator.py` (transaction-to-agent routing with queue-depth-based selection), `app/orchestration/approval_system.py` (threshold-based approval chains), and `app/orchestration/transaction_orchestrator.py` (artifact completeness tracking)
-- To **implement the Time Controller (F-004)**, we will create `app/orchestration/time_controller.py`, `app/orchestration/business_calendar.py` (US holidays via `holidays` library), and `app/orchestration/fiscal_calendar.py` (configurable periods with lifecycle management)
-- To **implement External World Simulation (F-005)**, we will create `app/external_world/` with `ExternalWorldManager` (tiered entity pools), `BehaviorProfile` (multi-dimensional behavioral configuration), and simulators for customers, vendors, and banks
-- To **implement Statistical Models (F-006)**, we will create `app/statistical/` with `AmountDistribution` (log-normal), `PaymentTimingModel` (5-segment mixture), `OrderFrequencyModel` (Poisson with day-of-week effects), and `SelectionModel` (Pareto 80/20)
-- To **implement the Event System (F-007)**, we will create `app/events/` with `EventBus` (dual-mode async pub/sub), `EventStore` (JSONB persistence with UUID-indexed queries), and 8 event type definitions
-- To **implement the Simulation Engine**, we will create `app/simulation/simulation_engine.py` (main loop driving TimeController → EventBus → ExternalWorld → Agents daily cycle), `app/simulation/day_context.py`, and `app/simulation/simulation_metrics.py`
+- To **implement the P2P Transaction Engine**, we will create five new generator classes under `app/transactions/p2p/` (`PurchaseOrderGenerator`, `GoodsReceiptGenerator`, `VendorInvoiceProcessor`, `ThreeWayMatcher`, `VendorPaymentGenerator`) that extend a shared `TransactionGenerator` abstract base class in `app/transactions/base_generator.py`, consuming Project 2's `AgentRegistry`, `WorkflowOrchestrator`, `EventBus`, and statistical models via constructor injection, and writing transaction data through Project 1's `get_session()` async context manager
+
+- To **implement the O2C Transaction Engine**, we will create four new generator classes under `app/transactions/o2c/` (`SalesOrderGenerator`, `ShipmentGenerator`, `CustomerInvoiceGenerator`, `CustomerPaymentProcessor`) following the same base class pattern, with credit check integration and FIFO payment allocation logic
+
+- To **implement the GL Integration**, we will create four new classes under `app/transactions/gl/` (`GLPostingEngine`, `AccountBalanceManager`, `AccrualGenerator`, `PeriodCloseManager`) that enforce balanced journal entries (DR = CR within $0.01), maintain real-time account balances with `SELECT FOR UPDATE` locking, and support period-end accrual generation
+
+- To **implement the Discrepancy Injection System**, we will create a `DiscrepancyInjector` and `GroundTruthGenerator` in `app/discrepancies/`, along with 35+ individual discrepancy type implementations organized under `app/discrepancies/p2p/` (15 types) and `app/discrepancies/o2c/` (10 types), with a central `DiscrepancyCatalog` mapping type codes to implementation classes and parameter bounds
+
+- To **implement the Intelligent Rework Loop**, we will create four new classes under `app/rework/` (`ReworkLoopEngine`, `FailureClassifier`, `FixScenarioCatalog`, `FixScenarioExecutor`) that classify validation failures as planned-discrepancy vs. unplanned-error, select fix scenarios sorted by success rate, apply fixes with re-validation, and escalate after 3 failed attempts
+
+- To **implement Period Close Processing**, we will extend the GL integration module with `PeriodCloseManager` and `AccrualGenerator` classes that subscribe to `PeriodClosing` events from Project 2's `TimeController`, generate GRNI accruals, shipped-not-invoiced accruals, and reversing entries, then validate trial balance before marking the period as CLOSED
+
+- To **integrate with existing Project 2 infrastructure**, we will extend the existing `REQUIRED_ARTIFACTS` mapping, publish events through the `EventBus`, consume approval thresholds from `config/workflows/approval_thresholds.yaml`, and route transactions through the `WorkflowOrchestrator` to specialized agents for decision-making
 
 ## 0.2 Repository Scope Discovery
 
 ### 0.2.1 Comprehensive File Analysis
 
-The repository is currently **empty** aside from `README.md` (2,349 lines), which serves as the single source-of-truth specification for the entire Project 2 implementation. Since this is a greenfield build, all files listed below must be **created** from scratch, following the module structure defined in the specification (`README.md`, lines 2146–2246).
+The following analysis catalogs every existing repository file and folder that must be evaluated, modified, or directly consumed by Project 3's transaction workflow and discrepancy injection system.
 
-**Existing files (repository baseline):**
+**Existing Modules to Modify or Extend:**
 
-| File Path | Purpose | Action Required |
-|-----------|---------|-----------------|
-| `README.md` | Project specification (2,349 lines) | Preserve as-is; reference for implementation |
+| File Path | Current Purpose | Required Modification |
+|-----------|----------------|----------------------|
+| `app/orchestration/transaction_orchestrator.py` | Tracks 8 transaction types with `REQUIRED_ARTIFACTS` mapping (lines 134–154) | Extend `REQUIRED_ARTIFACTS` to include P3-specific artifacts (e.g., `three_way_match_result`, `ground_truth`, `discrepancy_record`, `accrual_entry`, `period_close_summary`); may need additional artifact types per transaction |
+| `app/orchestration/workflow_orchestrator.py` | Routes transactions to agents via `ROLE_MAPPING` (8 types → eligible roles) | Verify coverage for all P3 transaction types; potentially extend routing logic for rework loop re-submission and period close workflows |
+| `app/orchestration/approval_system.py` | Enforces PO ($5K/$25K/$100K), vendor invoice ($10K/$50K/$100K), journal entry ($50K) approval thresholds | Consume as-is for P2P and GL approval chains; no modification needed unless new approval types are required |
+| `app/orchestration/time_controller.py` | Advances simulation day-by-day; emits `PeriodClosing`/`PeriodClosed` events | Subscribe to `PeriodClosing` events to trigger period close processing; consume fiscal period state for posting validation |
+| `app/orchestration/fiscal_calendar.py` | Manages fiscal periods (OPEN → CLOSING → CLOSED) | Consume for period boundary validation; no modification needed |
+| `app/orchestration/business_calendar.py` | US Federal holidays, working hours (08:00–17:00) | Consume for date calculations; no modification needed |
+| `app/events/event_types.py` | Defines 8 canonical event types including `DiscrepancyDetected`, `PeriodClosing`, `PeriodClosed` | Consume existing event types for publishing; potentially add new event types for GL posting, rework loop events |
+| `app/events/event_bus.py` | Dual-mode EventBus (in-memory / Redis Pub/Sub) | Consume via constructor injection for publishing transaction, discrepancy, GL, and rework events |
+| `app/events/event_store.py` | Redis JSONB event persistence (7-day TTL) | Consume for event persistence; no modification needed |
+| `app/agents/agent_registry.py` | 50-agent cap, role-based lookup, lifecycle management | Consume for agent assignment during transaction processing |
+| `app/agents/base_agent.py` | Abstract base agent with 5-state lifecycle | Consume agent decision framework; P3 generators use agents for decisions |
+| `app/agents/decision_engine.py` | 4-layer pipeline (Statistical → LLM → Validation → Deterministic) | Consume for qualitative decisions within transaction workflows |
+| `app/agents/action_registry.py` | 14 registered ERP actions (P2P, O2C, Financial) | Consume existing actions; may register additional P3-specific actions |
+| `app/agents/specialized/*.py` | 12 specialized agent implementations | Consume as-is; agents make decisions within P3 workflows |
+| `app/simulation/simulation_engine.py` | Composition root; 5-step daily pipeline | Extend to integrate P3 transaction generators into Step 2 (Generate Interactions) and Step 3 (Route Transactions); inject P3 subsystems |
+| `app/simulation/simulation_metrics.py` | `DailyMetricsSnapshot` and `MonthlyMetricsAggregate` | Extend to track P3-specific metrics (P2P/O2C rates, GL posting counts, discrepancy injection rates, rework success rates) |
+| `app/simulation/day_context.py` | Per-day validated state container | May extend to carry P3-specific daily context (open POs, pending invoices, etc.) |
+| `app/statistical/amount_distributions.py` | Log-normal amount distributions | Consume for generating realistic transaction amounts |
+| `app/statistical/payment_timing_model.py` | 5-segment mixture model for payment timing | Consume for determining payment dates in P2P and O2C flows |
+| `app/statistical/order_frequency_model.py` | Poisson order frequency with day-of-week multipliers | Consume for generating order volumes per day |
+| `app/statistical/selection_models.py` | Pareto (80/20) entity selection | Consume for vendor/customer/product selection |
+| `app/external_world/*.py` | Customer, Vendor, Bank simulators with tiered entity pools | Consume for master data access; P3 generators query entity pools |
+| `app/errors/error_handlers.py` | LLM, Agent, Workflow error handlers with credential scrubbing | Extend with P3-specific error handlers (transaction, GL, discrepancy, rework) |
 
-**Target module hierarchy to create (from specification, `README.md` lines 2146–2246):**
+**Configuration Files:**
 
-```
-synthetic_erp_platform/
-├── app/
-│   ├── __init__.py
-│   ├── agents/
-│   │   ├── __init__.py
-│   │   ├── base_agent.py
-│   │   ├── agent_config.py
-│   │   ├── agent_memory.py
-│   │   ├── agent_registry.py
-│   │   ├── action_registry.py
-│   │   ├── decision_engine.py
-│   │   └── specialized/
-│   │       ├── __init__.py
-│   │       ├── ap_clerk_agent.py
-│   │       ├── ap_manager_agent.py
-│   │       ├── ar_clerk_agent.py
-│   │       ├── ar_manager_agent.py
-│   │       ├── purchasing_agent.py
-│   │       ├── purchasing_manager_agent.py
-│   │       ├── warehouse_clerk_agent.py
-│   │       ├── warehouse_manager_agent.py
-│   │       ├── accountant_agent.py
-│   │       ├── senior_accountant_agent.py
-│   │       ├── controller_agent.py
-│   │       └── cfo_agent.py
-│   ├── llm/
-│   │   ├── __init__.py
-│   │   ├── llm_client.py
-│   │   ├── llm_config.py
-│   │   ├── llm_queue.py
-│   │   ├── llm_monitor.py
-│   │   ├── prompt_manager.py
-│   │   └── response_parser.py
-│   ├── orchestration/
-│   │   ├── __init__.py
-│   │   ├── workflow_orchestrator.py
-│   │   ├── transaction_orchestrator.py
-│   │   ├── approval_system.py
-│   │   ├── time_controller.py
-│   │   ├── business_calendar.py
-│   │   └── fiscal_calendar.py
-│   ├── external_world/
-│   │   ├── __init__.py
-│   │   ├── external_entity_manager.py
-│   │   ├── behavior_profiles.py
-│   │   ├── customer_simulator.py
-│   │   ├── vendor_simulator.py
-│   │   └── bank_simulator.py
-│   ├── statistical/
-│   │   ├── __init__.py
-│   │   ├── amount_distributions.py
-│   │   ├── timing_models.py
-│   │   ├── payment_timing_model.py
-│   │   ├── order_frequency_model.py
-│   │   └── selection_models.py
-│   ├── events/
-│   │   ├── __init__.py
-│   │   ├── event_bus.py
-│   │   ├── event_store.py
-│   │   ├── event_types.py
-│   │   └── event_handlers.py
-│   └── simulation/
-│       ├── __init__.py
-│       ├── simulation_engine.py
-│       ├── day_context.py
-│       └── simulation_metrics.py
-├── prompts/
-│   ├── process_vendor_invoice.yaml
-│   ├── approve_transaction.yaml
-│   ├── match_documents.yaml
-│   ├── handle_exception.yaml
-│   ├── generate_description.yaml
-│   └── reconcile_account.yaml
-├── config/
-│   ├── agents/
-│   │   └── agent_roles.yaml
-│   ├── workflows/
-│   │   └── approval_thresholds.yaml
-│   ├── statistical/
-│   │   ├── payment_timing.yaml
-│   │   └── amount_distributions.yaml
-│   └── llm/
-│       └── llm_config.yaml
-└── tests/
-    ├── __init__.py
-    ├── conftest.py
-    ├── test_agents/
-    │   ├── __init__.py
-    │   ├── test_base_agent.py
-    │   ├── test_agent_memory.py
-    │   ├── test_agent_config.py
-    │   ├── test_decision_engine.py
-    │   ├── test_action_registry.py
-    │   └── test_specialized_agents.py
-    ├── test_llm/
-    │   ├── __init__.py
-    │   ├── test_llm_client.py
-    │   ├── test_prompt_manager.py
-    │   ├── test_llm_queue.py
-    │   ├── test_llm_monitor.py
-    │   └── test_response_parser.py
-    ├── test_orchestration/
-    │   ├── __init__.py
-    │   ├── test_workflow_orchestrator.py
-    │   ├── test_approval_system.py
-    │   ├── test_transaction_orchestrator.py
-    │   └── test_time_controller.py
-    ├── test_external_world/
-    │   ├── __init__.py
-    │   ├── test_external_entity_manager.py
-    │   ├── test_behavior_profiles.py
-    │   └── test_simulators.py
-    ├── test_statistical/
-    │   ├── __init__.py
-    │   ├── test_payment_timing_model.py
-    │   ├── test_amount_distributions.py
-    │   ├── test_order_frequency_model.py
-    │   └── test_selection_models.py
-    ├── test_events/
-    │   ├── __init__.py
-    │   ├── test_event_bus.py
-    │   └── test_event_store.py
-    └── test_simulation/
-        ├── __init__.py
-        └── test_simulation_engine.py
-```
+| File Path | Current Contents | Required Action |
+|-----------|-----------------|-----------------|
+| `config/workflows/approval_thresholds.yaml` | PO, vendor invoice, journal entry thresholds | Consume as-is; add transaction-specific approval rules if needed |
+| `config/agents/agent_roles.yaml` | 12 agent role templates with personality traits | Consume as-is; agents serve as decision-makers in P3 workflows |
+| `config/llm/llm_config.yaml` | LLM provider, model, resilience configuration | Consume as-is for LLM-powered agent decisions |
+| `config/statistical/amount_distributions.yaml` | Log-normal distribution parameters | Consume as-is for amount generation |
+| `config/statistical/payment_timing.yaml` | 5-segment mixture model parameters | Consume as-is for payment timing |
+| `prompts/*.yaml` | 6 prompt templates (approve_transaction, process_vendor_invoice, match_documents, reconcile_account, etc.) | Consume existing templates; may add new templates for P3-specific agent decisions |
+| `.env.example` | LLM, Redis environment variables | Extend with P3 environment variables (TRANSACTION_BATCH_SIZE, GL_POSTING_BATCH_SIZE, DISCREPANCY_* variables, REWORK_LOOP_* variables, CONCURRENT_TRANSACTION_LIMIT, ENABLE_TRANSACTION_CACHING) |
+| `pyproject.toml` | Package metadata, dev dependencies, pytest config | Extend with P3-specific dependencies (psycopg2-binary, sqlalchemy, aiofiles, pydantic-settings, hypothesis) |
+| `requirements.txt` | 13 production dependencies | Extend with P3-specific production dependencies |
+| `requirements-dev.txt` | Test dependencies (pytest, fakeredis, aioresponses) | Extend with P3 test dependencies (pytest-mock, hypothesis) |
+| `pytest.ini` | Test configuration with markers | Add P3-specific test markers (e.g., `financial`, `discrepancy`, `rework`) |
 
-**Integration point discovery:**
+**Test Files to Update:**
 
-Since this is a greenfield project, the integration points are exclusively **outward-facing** toward Project 1's existing infrastructure:
+| File Path | Required Update |
+|-----------|----------------|
+| `tests/conftest.py` | Add P3-specific fixtures (mock database sessions, mock GL engine, discrepancy config fixtures, rework loop fixtures) |
+| `tests/test_orchestration/test_transaction_orchestrator.py` | Add tests for extended `REQUIRED_ARTIFACTS` mapping |
+| `tests/test_orchestration/test_workflow_orchestrator.py` | Add tests for P3 transaction routing patterns |
+| `tests/test_simulation/test_simulation_engine.py` | Add tests for P3 integration into daily pipeline |
 
-| Integration Point | Direction | Protocol | Files Involved |
-|-------------------|-----------|----------|----------------|
-| Project 1 REST API — Master Data | Outbound (read-only) | HTTP/REST via `aiohttp` | `app/agents/agent_registry.py`, `app/external_world/external_entity_manager.py` |
-| Project 1 Configuration System | Inbound (load at startup) | YAML/JSON files | `config/**/*.yaml`, `app/llm/llm_config.py` |
-| Project 1 Validation Framework | Shared library | Pydantic V2 models | All `app/**/*.py` modules |
-| Anthropic Claude API | Outbound | HTTPS via `anthropic` SDK | `app/llm/llm_client.py` |
-| OpenAI / Azure OpenAI API | Outbound | HTTPS via `openai` SDK | `app/llm/llm_client.py` |
-| Redis | Bidirectional | Redis protocol | `app/llm/llm_queue.py`, `app/events/event_store.py`, `app/agents/agent_memory.py` |
+**Integration Point Discovery:**
 
-### 0.2.2 Web Search Research Conducted
+- **Database Models/Migrations**: Project 3 writes to transaction tables owned by Project 1; all database access via `get_session()` from `synthetic_erp.db.session`
+- **API Endpoints**: No new API endpoints (Project 3 is a library, not a web service); consumes Project 1 REST API via `aiohttp` for master data queries
+- **Service Classes**: All P3 generators receive `AgentRegistry`, `WorkflowOrchestrator`, `EventBus`, and `GLPostingEngine` via constructor injection
+- **Controllers/Handlers**: The `SimulationEngine` serves as the composition root; P3 generators are injected alongside existing P2 subsystems
+- **Middleware/Interceptors**: No middleware; circuit breaker pattern implemented within each P3 service class
 
-Research was conducted on the following topics to inform the implementation plan:
+### 0.2.2 New File Requirements
 
-- **Best practices for async agent-based simulation systems in Python**: Confirmed asyncio event loop with `asyncio.Queue` for agent work queues and in-process event bus as the recommended pattern for sub-500 events/sec workloads
-- **LLM provider SDK versions and async client interfaces**: Verified `anthropic>=0.79.0` supports `AsyncAnthropic` and `openai>=2.20.0` supports `AsyncOpenAI` with the required message/completion interfaces
-- **Sentence-transformer `all-MiniLM-L6-v2` embedding dimensions and memory footprint**: Confirmed 384-dimensional embeddings, lightweight for local inference
-- **SciPy statistical distribution parameterization**: Confirmed `scipy.stats.lognorm`, `scipy.stats.norm`, and Pareto distribution APIs match the specification's parameterization
-- **Redis Streams consumer group patterns**: Confirmed XADD/XREADGROUP pattern for LLM queue with consumer groups aligns with Redis 7.x capabilities
-
-### 0.2.3 New File Requirements
-
-**New source files to create (63 files across 8 modules):**
-
-| Module | Files | Purpose |
-|--------|-------|---------|
-| `app/agents/` | `base_agent.py`, `agent_config.py`, `agent_memory.py`, `agent_registry.py`, `action_registry.py`, `decision_engine.py` | Core agent framework, configuration, memory, and decision logic |
-| `app/agents/specialized/` | 12 agent files (`ap_clerk_agent.py` through `cfo_agent.py`) | Specialized ERP role implementations |
-| `app/llm/` | `llm_client.py`, `llm_config.py`, `llm_queue.py`, `llm_monitor.py`, `prompt_manager.py`, `response_parser.py` | LLM integration, queuing, monitoring, and prompt management |
-| `app/orchestration/` | `workflow_orchestrator.py`, `transaction_orchestrator.py`, `approval_system.py`, `time_controller.py`, `business_calendar.py`, `fiscal_calendar.py` | Workflow routing, approval chains, and time management |
-| `app/external_world/` | `external_entity_manager.py`, `behavior_profiles.py`, `customer_simulator.py`, `vendor_simulator.py`, `bank_simulator.py` | External entity simulation with tiered behavior profiles |
-| `app/statistical/` | `amount_distributions.py`, `timing_models.py`, `payment_timing_model.py`, `order_frequency_model.py`, `selection_models.py` | Statistical distribution models |
-| `app/events/` | `event_bus.py`, `event_store.py`, `event_types.py`, `event_handlers.py` | Event-driven coordination and persistence |
-| `app/simulation/` | `simulation_engine.py`, `day_context.py`, `simulation_metrics.py` | Main simulation loop and metrics |
-
-**New prompt template files (6 YAML templates):**
-
-| File Path | Decision Type | Token Budget |
-|-----------|--------------|--------------|
-| `prompts/process_vendor_invoice.yaml` | Invoice processing with 3-way match | ~1,500 tokens |
-| `prompts/approve_transaction.yaml` | Approval decisions with reasoning | ~1,500 tokens |
-| `prompts/match_documents.yaml` | Document matching and reconciliation | ~1,500 tokens |
-| `prompts/handle_exception.yaml` | Edge-case and exception handling | ~1,500 tokens |
-| `prompts/generate_description.yaml` | Natural-language description generation | ~1,500 tokens |
-| `prompts/reconcile_account.yaml` | Account reconciliation decisions | ~1,500 tokens |
-
-**New configuration files (5 YAML configs):**
+**New Source Files to Create:**
 
 | File Path | Purpose |
 |-----------|---------|
-| `config/agents/agent_roles.yaml` | 12 agent role definitions with trait ranges |
-| `config/workflows/approval_thresholds.yaml` | Monetary thresholds for PO, invoice, and JE approvals |
-| `config/statistical/payment_timing.yaml` | 5-segment mixture model parameters |
-| `config/statistical/amount_distributions.yaml` | Log-normal and sizing distribution parameters |
-| `config/llm/llm_config.yaml` | Provider, model, fallback, rate limits, budget |
+| `app/transactions/__init__.py` | Package init; exports base classes and generator registry |
+| `app/transactions/base_generator.py` | Abstract `TransactionGenerator` base class with shared logic: discrepancy trigger checking, GL posting delegation, event publishing, retry/timeout policies |
+| `app/transactions/p2p/__init__.py` | P2P package init; exports all 5 P2P generator classes |
+| `app/transactions/p2p/purchase_order_generator.py` | `PurchaseOrderGenerator` — vendor selection, product selection (EOQ), pricing, approval routing, PO header/lines creation |
+| `app/transactions/p2p/goods_receipt_generator.py` | `GoodsReceiptGenerator` — receipt against open POs, quantity variance handling, inventory balance updates, GL posting (DR Inventory, CR AP Accrual) |
+| `app/transactions/p2p/vendor_invoice_processor.py` | `VendorInvoiceProcessor` — invoice creation, PO linkage, three-way matching, AP clerk routing, GL posting (DR Expense/Asset, CR AP) |
+| `app/transactions/p2p/three_way_matcher.py` | `ThreeWayMatcher` — PO/Receipt/Invoice matching with ±5% price and ±2% quantity tolerances, match status determination |
+| `app/transactions/p2p/vendor_payment_generator.py` | `VendorPaymentGenerator` — payment grouping by vendor/terms, discount calculation, check/ACH/wire selection, GL posting (DR AP, CR Cash) |
+| `app/transactions/o2c/__init__.py` | O2C package init; exports all 4 O2C generator classes |
+| `app/transactions/o2c/sales_order_generator.py` | `SalesOrderGenerator` — customer selection, credit check, product selection, pricing with discounts, SO header/lines creation |
+| `app/transactions/o2c/shipment_generator.py` | `ShipmentGenerator` — shipment against open SOs, carrier selection, tracking number generation, inventory reduction, GL posting (DR COGS, CR Inventory) |
+| `app/transactions/o2c/customer_invoice_generator.py` | `CustomerInvoiceGenerator` — invoice from shipped order, payment terms, due date calculation, GL posting (DR AR, CR Revenue) |
+| `app/transactions/o2c/customer_payment_processor.py` | `CustomerPaymentProcessor` — FIFO payment allocation, short pay handling, overpay → unapplied cash, GL posting (DR Cash, CR AR) |
+| `app/transactions/gl/__init__.py` | GL package init; exports GL engine and balance manager |
+| `app/transactions/gl/gl_posting_engine.py` | `GLPostingEngine` — journal entry creation, balance validation (DR = CR), account validation against COA, period validation, trial balance check |
+| `app/transactions/gl/account_balance_manager.py` | `AccountBalanceManager` — real-time balance maintenance with `SELECT FOR UPDATE`, normal balance direction enforcement, period-based tracking |
+| `app/transactions/gl/accrual_generator.py` | `AccrualGenerator` — AP accruals (GRNI), AR accruals (shipped not invoiced), straight-line daily method, reversing entries |
+| `app/transactions/gl/period_close_manager.py` | `PeriodCloseManager` — period close orchestration: validate all posted, generate accruals/deferrals, depreciation, recurring JEs, reconciliations, trial balance, close period |
+| `app/discrepancies/__init__.py` | Discrepancy package init; exports injector, ground truth generator, catalog |
+| `app/discrepancies/discrepancy_injector.py` | `DiscrepancyInjector` — rate-based injection trigger, type selection (weighted), parameter validation, ground truth linkage |
+| `app/discrepancies/ground_truth_generator.py` | `GroundTruthGenerator` — ground truth record creation with full schema (discrepancy_id, transaction_ids, detection_method, financial_impact, etc.) |
+| `app/discrepancies/discrepancy_catalog.py` | `DiscrepancyCatalog` — registry mapping 35+ type codes (P2P-001 through CTL-005) to implementation classes and parameter bounds |
+| `app/discrepancies/p2p/__init__.py` | P2P discrepancy package init |
+| `app/discrepancies/p2p/duplicate_invoice.py` | P2P-001: Duplicate Invoice (exact/near-duplicate) |
+| `app/discrepancies/p2p/price_mismatch.py` | P2P-002: Invoice/PO Price Mismatch |
+| `app/discrepancies/p2p/quantity_variance.py` | P2P-003: Invoice/Receipt Quantity Variance |
+| `app/discrepancies/p2p/missing_po.py` | P2P-004: Missing Purchase Order |
+| `app/discrepancies/p2p/po_not_approved.py` | P2P-005: PO Not Approved |
+| `app/discrepancies/p2p/invoice_before_receipt.py` | P2P-006: Invoice Before Receipt |
+| `app/discrepancies/p2p/round_dollar_invoice.py` | P2P-007: Round-Dollar Invoice (fraud indicator) |
+| `app/discrepancies/p2p/weekend_processing.py` | P2P-008: Weekend Processing |
+| `app/discrepancies/p2p/duplicate_payment.py` | P2P-009: Duplicate Payment |
+| `app/discrepancies/p2p/payment_before_invoice.py` | P2P-010: Payment Before Invoice Date |
+| `app/discrepancies/p2p/unapproved_vendor.py` | P2P-011: Vendor Not in Approved List |
+| `app/discrepancies/p2p/split_po.py` | P2P-012: Split PO to Avoid Approval |
+| `app/discrepancies/p2p/fictitious_vendor.py` | P2P-013: Fictitious Vendor (address matches employee) |
+| `app/discrepancies/p2p/vendor_concentration.py` | P2P-014: Unusual Vendor Concentration |
+| `app/discrepancies/p2p/ghost_expense.py` | P2P-015: Ghost Expense (no supporting documentation) |
+| `app/discrepancies/o2c/__init__.py` | O2C discrepancy package init |
+| `app/discrepancies/o2c/duplicate_customer_invoice.py` | O2C-001: Duplicate Customer Invoice |
+| `app/discrepancies/o2c/invoice_without_shipment.py` | O2C-002: Invoice Without Shipment |
+| `app/discrepancies/o2c/credit_limit_exceeded.py` | O2C-003: Credit Limit Exceeded |
+| `app/discrepancies/o2c/short_payment.py` | O2C-004: Short Payment |
+| `app/discrepancies/o2c/overpayment_not_returned.py` | O2C-005: Overpayment Not Returned |
+| `app/discrepancies/o2c/revenue_recognition_timing.py` | O2C-006: Revenue Recognition Timing Error |
+| `app/discrepancies/o2c/fictitious_customer.py` | O2C-007: Fictitious Customer |
+| `app/discrepancies/o2c/round_tripping.py` | O2C-008: Round-Tripping (circular transactions) |
+| `app/discrepancies/o2c/channel_stuffing.py` | O2C-009: Channel Stuffing (premature shipments) |
+| `app/discrepancies/o2c/side_agreements.py` | O2C-010: Side Agreements Not Disclosed |
+| `app/discrepancies/gl/__init__.py` | GL discrepancy package init |
+| `app/discrepancies/gl/unbalanced_journal.py` | GL-001: Unbalanced Journal Entry |
+| `app/discrepancies/gl/journal_no_approval.py` | GL-002: Journal Entry Without Approval |
+| `app/discrepancies/gl/suspicious_adjusting.py` | GL-003: Period-End Adjusting Entry (suspicious) |
+| `app/discrepancies/gl/unusual_account_combo.py` | GL-004: Unusual Account Combination |
+| `app/discrepancies/gl/manual_override.py` | GL-005: Manual Entry Overriding System Entry |
+| `app/discrepancies/control/__init__.py` | Control discrepancy package init |
+| `app/discrepancies/control/sod_violation.py` | CTL-001: Segregation of Duties Violation |
+| `app/discrepancies/control/self_approval.py` | CTL-002: Same User Created and Approved |
+| `app/discrepancies/control/approval_limit_exceeded.py` | CTL-003: Approval Limit Exceeded |
+| `app/discrepancies/control/backdated_transaction.py` | CTL-004: Backdated Transaction |
+| `app/discrepancies/control/holiday_transaction.py` | CTL-005: Transaction on Holiday/Weekend |
+| `app/rework/__init__.py` | Rework package init |
+| `app/rework/rework_loop_engine.py` | `ReworkLoopEngine` — orchestrates the rework loop: classify → select fix → apply → re-validate → escalate |
+| `app/rework/failure_classifier.py` | `FailureClassifier` — classifies validation failures as planned discrepancy (within/outside parameters) or unplanned error |
+| `app/rework/fix_scenario_catalog.py` | `FixScenarioCatalog` — 20+ fix scenarios with names, steps, and success rates (e.g., ADJUST_AMOUNT_TO_RANGE, FIX_DATE_SEQUENCE) |
+| `app/rework/fix_scenario_executor.py` | `FixScenarioExecutor` — executes fix scenarios against transactions; handles timeout and failure |
 
-**New test files (22 test modules):**
-
-| Test Module | Coverage Target |
-|-------------|-----------------|
-| `tests/test_agents/test_base_agent.py` | BaseAgent lifecycle, work queue, state transitions |
-| `tests/test_agents/test_agent_memory.py` | Dual-stream memory, semantic retrieval, cleanup |
-| `tests/test_agents/test_agent_config.py` | AgentConfig validation, trait boundaries |
-| `tests/test_agents/test_decision_engine.py` | 4-layer decision pipeline, fallback logic |
-| `tests/test_agents/test_action_registry.py` | Action registration, validation rules |
-| `tests/test_agents/test_specialized_agents.py` | All 12 specialized agent types |
-| `tests/test_llm/test_llm_client.py` | Provider abstraction, retry, fallback (mocked) |
-| `tests/test_llm/test_prompt_manager.py` | Template loading, context assembly, token estimation |
-| `tests/test_llm/test_llm_queue.py` | Redis Streams enqueue/dequeue, priority, batch |
-| `tests/test_llm/test_llm_monitor.py` | Metrics tracking, budget alerts |
-| `tests/test_llm/test_response_parser.py` | JSON extraction, schema validation |
-| `tests/test_orchestration/test_workflow_orchestrator.py` | Transaction routing, agent selection |
-| `tests/test_orchestration/test_approval_system.py` | Threshold enforcement, escalation chains |
-| `tests/test_orchestration/test_transaction_orchestrator.py` | Artifact tracking, completeness checks |
-| `tests/test_orchestration/test_time_controller.py` | Calendar advancement, holiday skipping |
-| `tests/test_external_world/test_external_entity_manager.py` | Tiered entity pool management |
-| `tests/test_external_world/test_behavior_profiles.py` | Profile assignment and behavioral parameters |
-| `tests/test_external_world/test_simulators.py` | Customer, vendor, bank simulation logic |
-| `tests/test_statistical/test_payment_timing_model.py` | 5-segment mixture, profile-weighted selection |
-| `tests/test_statistical/test_amount_distributions.py` | Log-normal sampling, rounding, discount |
-| `tests/test_statistical/test_order_frequency_model.py` | Poisson with day-of-week multipliers |
-| `tests/test_statistical/test_selection_models.py` | Pareto vendor selection, revenue-weighted customer |
-| `tests/test_events/test_event_bus.py` | Pub/sub, priority handling, dual-mode |
-| `tests/test_events/test_event_store.py` | Event persistence, query, replay |
-| `tests/test_simulation/test_simulation_engine.py` | Daily loop, subsystem coordination |
-
-**Project root files to create:**
+**New Configuration Files:**
 
 | File Path | Purpose |
 |-----------|---------|
-| `pyproject.toml` | Project metadata, dependencies, build configuration |
-| `requirements.txt` | Pinned dependency versions |
-| `.env.example` | Template for environment variables (LLM_PROVIDER, LLM_API_KEY, etc.) |
-| `pytest.ini` or `setup.cfg` | Test configuration |
+| `config/discrepancies/p2p_discrepancies.yaml` | P2P discrepancy type definitions, base rates, parameter bounds |
+| `config/discrepancies/o2c_discrepancies.yaml` | O2C discrepancy type definitions, base rates, parameter bounds |
+| `config/discrepancies/gl_discrepancies.yaml` | GL and Control discrepancy type definitions |
+| `config/discrepancies/discrepancy_rates.yaml` | Global discrepancy injection rates, difficulty distribution, auto-adjust settings |
+| `config/transactions/approval_thresholds.yaml` | Transaction-specific approval thresholds (extending existing config) |
+| `config/transactions/posting_rules.yaml` | GL posting rules per transaction type (debit/credit account mappings) |
+| `config/transactions/period_close.yaml` | Period close configuration (accrual rules, reconciliation settings) |
+
+**New Test Files:**
+
+| File Path | Purpose |
+|-----------|---------|
+| `tests/test_transactions/__init__.py` | Transaction tests package init |
+| `tests/test_transactions/test_p2p_cycle.py` | Full P2P cycle tests (PO → Receipt → Invoice → Payment), artifact completeness, GL balance verification |
+| `tests/test_transactions/test_o2c_cycle.py` | Full O2C cycle tests (Order → Ship → Invoice → Receipt), credit check, FIFO allocation |
+| `tests/test_transactions/test_gl_posting.py` | GL posting engine tests: balance validation, trial balance, account validation, period validation, concurrent posting |
+| `tests/test_transactions/test_three_way_matching.py` | Three-way matching tests: tolerance checks, match statuses, variance calculations |
+| `tests/test_transactions/test_period_close.py` | Period close tests: accrual generation, trial balance, period state transitions |
+| `tests/test_transactions/test_base_generator.py` | Base generator abstract class tests |
+| `tests/test_discrepancies/__init__.py` | Discrepancy tests package init |
+| `tests/test_discrepancies/test_discrepancy_injection.py` | Injection rate control, type distribution, parameter bounds validation |
+| `tests/test_discrepancies/test_ground_truth.py` | Ground truth completeness, schema validation, transaction linkage |
+| `tests/test_discrepancies/test_individual_discrepancies.py` | Per-type discrepancy tests (P2P-001 through CTL-005), parameterized across all 35+ types |
+| `tests/test_discrepancies/test_discrepancy_catalog.py` | Catalog completeness, type registration, parameter bounds |
+| `tests/test_rework/__init__.py` | Rework tests package init |
+| `tests/test_rework/test_rework_loop.py` | End-to-end rework loop tests: classify → fix → re-validate → escalate, max 3 attempts, escalation threshold |
+| `tests/test_rework/test_failure_classifier.py` | Failure classification tests: planned vs. unplanned, parameter bounds checking |
+| `tests/test_rework/test_fix_scenarios.py` | Fix scenario catalog tests: scenario selection, exclusion of failed scenarios, success rate sorting |
+
+### 0.2.3 Web Search Research Conducted
+
+The following research areas were identified from the user's specification to inform implementation decisions:
+
+- **Three-Way Matching Best Practices**: Industry-standard tolerance thresholds for PO/Receipt/Invoice matching (±5% price, ±2% quantity as specified)
+- **Discrepancy Injection Patterns**: Approaches for realistic financial fraud simulation, including duplicate invoice detection heuristics and fictitious vendor indicators
+- **Period Close Accounting**: GRNI (Goods Received Not Invoiced) accrual calculation methods, straight-line daily accrual computation
+- **FIFO Payment Allocation**: Implementation patterns for oldest-invoice-first payment application with short pay and overpay handling
+- **Circuit Breaker Pattern**: Python implementation using `tenacity` or custom state machines for the three configured circuit breakers (GL posting, discrepancy injection, rework loop)
+- **SELECT FOR UPDATE Patterns**: SQLAlchemy async implementation for pessimistic locking during concurrent balance updates
 
 ## 0.3 Dependency Inventory
 
 ### 0.3.1 Private and Public Packages
 
-All packages listed below are public and sourced from the Python Package Index (PyPI). No private packages are required. Versions were verified by installing into a Python 3.11 virtual environment and cross-referencing with the specification (`README.md`, lines 710–727) and the tech spec sections on frameworks and libraries.
+The following table lists all key packages relevant to the Project 3 feature addition. Packages are divided into those already present in the Project 2 codebase (to be consumed) and those that must be added for Project 3's specific requirements.
+
+**Existing Packages (from Project 2 `requirements.txt`):**
+
+| Registry | Package Name | Version | Purpose in Project 3 |
+|----------|-------------|---------|---------------------|
+| PyPI | `structlog` | ≥24.1.0 | Structured JSON logging for all transaction, GL, discrepancy, and rework operations |
+| PyPI | `pydantic` | ≥2.5.0 | Pydantic V2 data contracts for all transaction models, GL entries, discrepancy records, ground truth schemas |
+| PyPI | `numpy` | ≥1.26.0 | Array operations and seeded `RandomState` for deterministic transaction amount generation |
+| PyPI | `scipy` | ≥1.12.0 | Statistical distributions for amount (log-normal), timing (mixture), and frequency (Poisson) models |
+| PyPI | `tenacity` | ≥8.2.0 | Retry with exponential/linear backoff for all P3 operation retry policies (8 operations) |
+| PyPI | `redis` | ≥7.0.0 | Event persistence via EventBus/EventStore; agent state caching |
+| PyPI | `python-dateutil` | ≥2.8.0 | Date arithmetic for payment due dates, lead times, fiscal period calculations |
+| PyPI | `holidays` | ≥0.40 | US Federal holiday detection for business day validation |
+| PyPI | `faker` | ≥22.0.0 | Synthetic data generation for vendor names, addresses, invoice numbers |
+| PyPI | `anthropic` | ≥0.79.0 | LLM provider for agent decision-making (process_vendor_invoice, approve_transaction) |
+| PyPI | `openai` | ≥2.20.0 | Fallback LLM provider for agent decisions |
+| PyPI | `aiohttp` | ≥3.9.0 | Async HTTP client for Project 1 REST API master data queries |
+| PyPI | `sentence-transformers` | ≥2.3.0 | Agent memory semantic search (consumed indirectly via agents) |
+
+**New Packages Required for Project 3 (from user specification):**
+
+| Registry | Package Name | Version | Purpose in Project 3 |
+|----------|-------------|---------|---------------------|
+| PyPI | `sqlalchemy` | ==2.0.25 | ORM and async database access for transaction persistence; used with `get_session()` from Project 1 |
+| PyPI | `psycopg2-binary` | ==2.9.9 | PostgreSQL adapter for SQLAlchemy async sessions (Project 1 database) |
+| PyPI | `aiofiles` | ==23.2.1 | Async file I/O for ground truth JSON/CSV output files |
+| PyPI | `pydantic-settings` | ==2.2.0 | Environment variable loading for P3 configuration (TRANSACTION_BATCH_SIZE, DISCREPANCY_* vars) |
+| PyPI | `pandas` | ==2.2.0 | DataFrame operations for ground truth summary CSV generation and batch analytics |
+
+**New Test/Dev Packages Required:**
 
 | Registry | Package Name | Version | Purpose |
 |----------|-------------|---------|---------|
-| PyPI | `anthropic` | >=0.79.0 | Anthropic Claude API async client (`AsyncAnthropic`) for LLM completions |
-| PyPI | `openai` | >=2.20.0 | OpenAI / Azure OpenAI async client (`AsyncOpenAI`) for LLM completions |
-| PyPI | `aiohttp` | >=3.9.0 | Async HTTP client for Project 1 REST API integration |
-| PyPI | `redis` | >=7.0.0 | Redis client for caching, LLM queue (Streams), event store, agent state |
-| PyPI | `numpy` | >=1.26.0 | Array operations, random state seeding for reproducible simulations |
-| PyPI | `scipy` | >=1.12.0 | Statistical distributions: lognorm, norm, poisson, pareto via `scipy.stats` |
-| PyPI | `faker` | >=22.0.0 | Synthetic data generation with custom ERP providers |
-| PyPI | `pydantic` | >=2.5.0 | Data validation at all subsystem boundaries (V2 with `BaseModel`) |
-| PyPI | `structlog` | >=24.1.0 | Structured JSON logging to stdout |
-| PyPI | `python-dateutil` | >=2.8.0 | Date arithmetic, relative deltas for business calendar operations |
-| PyPI | `holidays` | >=0.40 | US Federal holiday calendar (2024–2026) |
-| PyPI | `tenacity` | >=8.2.0 | Retry with exponential backoff for LLM API calls |
-| PyPI | `sentence-transformers` | >=2.3.0 | Local `all-MiniLM-L6-v2` embeddings for agent memory semantic retrieval |
-
-**Development and testing dependencies:**
-
-| Registry | Package Name | Version | Purpose |
-|----------|-------------|---------|---------|
-| PyPI | `pytest` | >=8.0.0 | Test framework |
-| PyPI | `pytest-asyncio` | >=0.23.0 | Async test support for asyncio-based components |
-| PyPI | `pytest-cov` | >=4.1.0 | Coverage reporting (target ≥80%) |
-| PyPI | `fakeredis` | >=2.21.0 | In-memory Redis mock for unit tests |
-| PyPI | `aioresponses` | >=0.7.6 | Mocking aiohttp requests for integration tests |
+| PyPI | `pytest-mock` | ≥3.12.0 | Advanced mocking for transaction generator tests and GL posting stubs |
+| PyPI | `hypothesis` | ≥6.92.0 | Property-based testing for transaction generation validation (amounts, balances, sequences) |
 
 ### 0.3.2 Dependency Updates
 
-Since this is a greenfield project with an empty repository, there are no existing imports to update. All import structures will be created fresh following the module hierarchy defined in the specification.
+**Import Updates:**
 
-**Import conventions to establish across all modules:**
+Files requiring new imports to integrate P3 modules:
 
-- Internal cross-module imports use relative paths within `app/`:
-  - `from app.agents.base_agent import BaseAgent`
-  - `from app.llm.llm_client import LLMClient`
-  - `from app.events.event_bus import EventBus`
-- External library imports follow standard Python conventions:
-  - `import asyncio`
-  - `from scipy import stats`
-  - `import numpy as np`
-- Pydantic models are imported for all data contracts:
-  - `from pydantic import BaseModel, Field, validator`
+- `app/simulation/simulation_engine.py` — Add imports for P3 transaction generators, discrepancy injector, rework loop engine, and period close manager; extend constructor to accept P3 subsystems
+- `app/simulation/simulation_metrics.py` — Add metric counters for P3 domains (P2P rate, O2C rate, GL posting rate, discrepancy count, rework success rate)
+- `app/errors/error_handlers.py` — Add imports for P3-specific exception types (`TransactionError`, `BalanceError`, `ThreeWayMatchError`, etc.)
+- `app/orchestration/transaction_orchestrator.py` — Extend `REQUIRED_ARTIFACTS` with additional P3 artifact types if needed
+- `tests/conftest.py` — Add P3-specific fixtures and mock factories
 
-**Configuration files to create:**
+**Import Transformation Rules:**
 
-| File | Format | Contents |
-|------|--------|----------|
-| `pyproject.toml` | TOML | Project metadata, dependency specifications, build system, pytest config |
-| `requirements.txt` | Plain text | Pinned versions of all production dependencies |
-| `requirements-dev.txt` | Plain text | Development and testing dependencies |
-| `.env.example` | Environment template | LLM_PROVIDER, LLM_MODEL, LLM_FALLBACK_MODEL, LLM_API_KEY, LLM_MAX_TOKENS, LLM_TEMPERATURE, REDIS_URL |
+- All P3 internal imports use the new package paths:
+  ```python
+  from app.transactions.p2p.purchase_order_generator import PurchaseOrderGenerator
+  ```
+- Project 1 database imports follow the specified pattern:
+  ```python
+  from synthetic_erp.db.session import get_session
+  ```
+- All P3 modules use relative imports within their own package and absolute imports for cross-package references
 
-**Environment variables required (from `README.md`, lines 183–189):**
+**External Reference Updates:**
 
-| Variable | Type | Description |
-|----------|------|-------------|
-| `LLM_PROVIDER` | str | LLM provider selection: "anthropic", "openai", "azure_openai" |
-| `LLM_MODEL` | str | Primary model identifier (e.g., "claude-sonnet-4-20250514") |
-| `LLM_FALLBACK_MODEL` | str | Fallback model identifier (e.g., "claude-haiku-4-20250514") |
-| `LLM_API_KEY` | str | Provider API key (never logged or serialized) |
-| `LLM_MAX_TOKENS` | int | Maximum tokens per completion (default: 1000) |
-| `LLM_TEMPERATURE` | float | Sampling temperature (default: 0.7) |
-| `REDIS_URL` | str | Redis connection URL for caching, queuing, and persistence |
+| File | Update Required |
+|------|----------------|
+| `requirements.txt` | Add `sqlalchemy==2.0.25`, `psycopg2-binary==2.9.9`, `aiofiles==23.2.1`, `pydantic-settings==2.2.0`, `pandas==2.2.0` |
+| `requirements-dev.txt` | Add `pytest-mock>=3.12.0`, `hypothesis>=6.92.0` |
+| `pyproject.toml` | Update `[project.dependencies]` and `[project.optional-dependencies.dev]` to include P3 packages; update coverage configuration to include `app/transactions/`, `app/discrepancies/`, `app/rework/` |
+| `.env.example` | Add all P3 environment variables: `TRANSACTION_BATCH_SIZE`, `GL_POSTING_BATCH_SIZE`, `DISCREPANCY_INJECTION_ENABLED`, `DISCREPANCY_DEFAULT_RATE`, `DISCREPANCY_DIFFICULTY_DISTRIBUTION`, `REWORK_LOOP_ENABLED`, `REWORK_LOOP_MAX_ATTEMPTS`, `REWORK_LOOP_TIMEOUT_SECONDS`, `REWORK_ESCALATION_THRESHOLD`, `CONCURRENT_TRANSACTION_LIMIT`, `ENABLE_TRANSACTION_CACHING` |
+| `pytest.ini` | Add markers: `financial` (tests involving GL balance assertions), `discrepancy` (discrepancy injection tests), `rework` (rework loop tests), `p2p` (P2P cycle tests), `o2c` (O2C cycle tests) |
 
 ## 0.4 Integration Analysis
 
 ### 0.4.1 Existing Code Touchpoints
 
-Since this is a greenfield project being built into an empty repository, there are no existing source files to modify. However, the system has critical **external integration touchpoints** with Project 1's infrastructure and external LLM APIs that must be precisely implemented. All integration contracts are documented in the specification (`README.md`, lines 2108–2141).
+**Direct Modifications Required:**
 
-**Project 1 REST API Integration Points:**
+- **`app/simulation/simulation_engine.py`** (Composition Root): Extend the constructor to accept P3 subsystems via constructor injection — `TransactionGeneratorRegistry` (or individual P2P/O2C generators), `DiscrepancyInjector`, `GLPostingEngine`, `ReworkLoopEngine`, and `PeriodCloseManager`. Modify Step 2 (`_generate_interactions()`) to invoke P3 transaction generators after P2's `ExternalWorldManager` produces interaction items. Modify Step 3 (`_route_transactions()`) to pass generated transactions through the discrepancy injection pipeline before routing to agents. Add a new Step 4.5 or extend Step 5 to execute rework loop validation on completed transactions before finalization.
 
-| Integration | Module | Method | Data Consumed |
-|-------------|--------|--------|---------------|
-| Master data: customers | `app/external_world/external_entity_manager.py` | `aiohttp` GET requests | Customer records (IDs, names, tiers, payment terms) |
-| Master data: vendors | `app/external_world/external_entity_manager.py` | `aiohttp` GET requests | Vendor records (IDs, names, categories, spend history) |
-| Master data: products | `app/external_world/customer_simulator.py` | `aiohttp` GET requests | Product catalog for order generation |
-| Master data: employees | `app/agents/agent_registry.py` | `aiohttp` GET requests | Employee records for agent-to-employee binding |
-| Configuration | `config/**/*.yaml` | Loaded at startup | Approval thresholds, agent role definitions |
-| Validation schemas | All `app/**/*.py` modules | Pydantic V2 models | Input/output validation at subsystem boundaries |
+- **`app/simulation/simulation_metrics.py`** (Metrics Tracking): Add new metric counters and aggregation fields for P3 operations — `p2p_cycles_completed`, `o2c_cycles_completed`, `gl_entries_posted`, `discrepancies_injected`, `ground_truths_created`, `rework_attempts`, `rework_successes`, `rework_escalations`, `period_closes_completed`, `trial_balance_checks_passed`. Extend `DailyMetricsSnapshot` and `MonthlyMetricsAggregate` Pydantic models to carry these fields.
 
-**Redis Integration Points:**
+- **`app/simulation/day_context.py`** (Daily State): Extend `DayContext` to carry P3-specific daily context — open purchase orders awaiting receipt, pending vendor invoices awaiting match, unposted GL entries, active rework items. This enables P3 generators to query the day's state for realistic transaction sequencing (e.g., cannot generate a goods receipt if no POs are open).
 
-| Component | Redis Feature | Key Pattern | TTL |
-|-----------|--------------|-------------|-----|
-| `app/agents/agent_memory.py` | Key-Value (SET/GET) | `agent:{agent_id}:observations`, `agent:{agent_id}:reflections` | 30 days |
-| `app/agents/agent_registry.py` | Key-Value (SET/GET) | `agent:{agent_id}:state` | 24 hours |
-| `app/llm/llm_queue.py` | Streams (XADD/XREADGROUP) | Stream: `llm_requests`, Consumer group: `llm_workers` | 1 hour |
-| `app/events/event_store.py` | Key-Value with JSONB | `event:{event_id}` | 7 days |
-| `app/events/event_bus.py` | Pub/Sub (optional) | Channel: `events:{event_type}` | N/A (transient) |
+- **`app/errors/error_handlers.py`** (Error Infrastructure): Add a new `TransactionErrorHandler` class alongside the existing `LLMErrorHandler`, `AgentErrorHandler`, and `WorkflowErrorHandler`. This handler will implement the retry policies defined in the user specification (8 operations with specific retry counts, backoff strategies, timeouts, and fallbacks). It must integrate with the circuit breaker configuration for GL posting, discrepancy injection, and rework loop operations.
 
-**LLM Provider API Integration Points:**
+- **`.env.example`** (Environment Template): Append all 11 P3 environment variables with comments documenting their purpose, valid ranges, and defaults (TRANSACTION_BATCH_SIZE=100, GL_POSTING_BATCH_SIZE=500, DISCREPANCY_INJECTION_ENABLED=true, DISCREPANCY_DEFAULT_RATE=0.02, etc.).
 
-| Provider | SDK Method | Module | Retry Strategy |
-|----------|-----------|--------|----------------|
-| Anthropic | `client.messages.create()` | `app/llm/llm_client.py` → `_complete_anthropic()` | 3 retries via tenacity (2s, 4s, 10s) + fallback to cheaper model |
-| OpenAI | `client.chat.completions.create()` | `app/llm/llm_client.py` → `_complete_openai()` | 3 retries via tenacity (2s, 4s, 10s) + fallback to cheaper model |
-| Circuit Breaker | Opens after 5 consecutive failures | `app/llm/llm_queue.py` | Auto-close after cooldown period |
+- **`requirements.txt`** (Production Dependencies): Add 5 new production dependencies: `sqlalchemy==2.0.25`, `psycopg2-binary==2.9.9`, `aiofiles==23.2.1`, `pydantic-settings==2.2.0`, `pandas==2.2.0`.
 
-### 0.4.2 Internal Cross-Module Integration Map
+- **`requirements-dev.txt`** (Dev Dependencies): Add 2 new test dependencies: `pytest-mock>=3.12.0`, `hypothesis>=6.92.0`.
 
-The following diagram illustrates how the seven subsystems interconnect within the engine. Each arrow represents a direct method call, queue enqueue, or event publication:
+- **`pyproject.toml`** (Package Configuration): Update `[project.dependencies]` to list P3 packages, extend `[tool.pytest.ini_options]` markers, and update `[tool.coverage.run]` source paths to include `app/transactions`, `app/discrepancies`, `app/rework`.
+
+- **`pytest.ini`** (Test Configuration): Add custom markers `financial`, `discrepancy`, `rework`, `p2p`, `o2c` for selective test execution of P3 test suites.
+
+- **`tests/conftest.py`** (Test Fixtures): Add P3-specific shared fixtures — mock database session factory, mock GL posting engine, mock discrepancy injector, mock rework loop, sample transaction data factories (PO, SO, invoice, receipt, shipment, payment, journal entry), and deterministic seeding helpers.
+
+**Dependency Injections:**
+
+- **`app/simulation/simulation_engine.py`** (Constructor): Register all P3 subsystems as optional constructor parameters — `gl_posting_engine: Optional[GLPostingEngine] = None`, `discrepancy_injector: Optional[DiscrepancyInjector] = None`, `rework_loop_engine: Optional[ReworkLoopEngine] = None`, `period_close_manager: Optional[PeriodCloseManager] = None`. Following Project 2's pattern (ADR-003), `None` values silently skip functionality, enabling incremental integration and test isolation.
+
+- **P3 Generators Internal Wiring**: Each transaction generator receives its dependencies via constructor — `db` (AsyncSession from `get_session()`), `agent_registry` (from P2), `discrepancy_injector`, `gl_posting_engine`, `event_bus` (from P2). The `TransactionGenerator` base class defines the injection interface.
+
+**Database/Schema Updates:**
+
+- **Project 1 Database**: P3 writes to transaction-related tables that are defined and owned by Project 1's schema. No direct DDL (CREATE TABLE, ALTER TABLE) will be issued by P3 — all table definitions are assumed to exist in Project 1's migration history. P3 accesses these tables exclusively through SQLAlchemy ORM models and Project 1's `get_session()` context manager.
+
+- **New Tables Written by P3** (defined by Project 1, written by P3): `purchase_orders`, `purchase_order_lines`, `goods_receipts`, `goods_receipt_lines`, `vendor_invoices`, `vendor_invoice_lines`, `vendor_payments`, `vendor_payment_allocations`, `sales_orders`, `sales_order_lines`, `shipments`, `shipment_lines`, `customer_invoices`, `customer_invoice_lines`, `customer_receipts`, `customer_receipt_allocations`, `journal_entries`, `journal_entry_lines`, `account_balances`, `discrepancies`, `ground_truths`, `rework_attempts`
+
+**Event Integration:**
 
 ```mermaid
 flowchart TD
-    SimEngine["SimulationEngine<br/>(app/simulation/)"]
-    TimeCtr["TimeController<br/>(app/orchestration/)"]
-    ExtWorld["ExternalWorldManager<br/>(app/external_world/)"]
-    WFOrch["WorkflowOrchestrator<br/>(app/orchestration/)"]
-    AgentSys["BaseAgent + Specialized<br/>(app/agents/)"]
-    DecEng["DecisionEngine<br/>(app/agents/)"]
-    LLMClient["LLMClient + Queue<br/>(app/llm/)"]
-    StatModels["Statistical Models<br/>(app/statistical/)"]
-    EventBus["EventBus + Store<br/>(app/events/)"]
-    Redis["Redis<br/>(External)"]
-    P1API["Project 1 REST API<br/>(External)"]
+    subgraph P3_Publishers["Project 3 — Event Publishers"]
+        P2P["P2P Generators"]
+        O2C["O2C Generators"]
+        GL["GL Posting Engine"]
+        DI["Discrepancy Injector"]
+        RW["Rework Loop Engine"]
+        PC["Period Close Manager"]
+    end
 
-    SimEngine -->|"advance day"| TimeCtr
-    SimEngine -->|"generate interactions"| ExtWorld
-    SimEngine -->|"route transactions"| WFOrch
-    TimeCtr -->|"DayStart, PeriodClosing events"| EventBus
-    ExtWorld -->|"sample distributions"| StatModels
-    ExtWorld -->|"query master data"| P1API
-    WFOrch -->|"enqueue work items"| AgentSys
-    WFOrch -->|"approval events"| EventBus
-    AgentSys -->|"make decisions"| DecEng
-    AgentSys -->|"store memories"| Redis
-    AgentSys -->|"publish events"| EventBus
-    DecEng -->|"LLM completions"| LLMClient
-    DecEng -->|"sample amounts/timing"| StatModels
-    LLMClient -->|"queue requests"| Redis
-    EventBus -->|"persist events"| Redis
+    subgraph EventBus["Project 2 — EventBus (Dual-Mode)"]
+        EB["EventBus<br/>(In-Memory / Redis Pub/Sub)"]
+    end
+
+    subgraph EventTypes["Event Types Published"]
+        TC["TransactionCreated"]
+        TCo["TransactionCompleted"]
+        DD["DiscrepancyDetected"]
+        AR["ApprovalRequired"]
+        PCl["PeriodClosing"]
+        PCd["PeriodClosed"]
+        DG["DocumentGenerated"]
+    end
+
+    P2P -->|"PO Created, Receipt, Invoice, Payment"| TC
+    O2C -->|"SO Created, Shipment, Invoice, Receipt"| TC
+    P2P & O2C -->|"Cycle complete"| TCo
+    GL -->|"JE Posted"| DG
+    DI -->|"Discrepancy injected"| DD
+    P2P & O2C -->|"Amount > threshold"| AR
+    PC -->|"Period closing started"| PCl
+    PC -->|"Period fully closed"| PCd
+
+    TC & TCo & DD & AR & PCl & PCd & DG --> EB
+
+    style P3_Publishers fill:#2563eb,color:#fff,stroke:#1e40af
+    style EventBus fill:#d97706,color:#fff,stroke:#b45309
 ```
 
-### 0.4.3 Dependency Injection Wiring
+**Cross-Project Integration Map:**
 
-All subsystems will be wired through constructor injection in the `SimulationEngine`, which acts as the composition root. The injection hierarchy is:
+```mermaid
+flowchart LR
+    subgraph Project1["Project 1 — Database & Master Data"]
+        DB["PostgreSQL DB<br/>get_session()"]
+        MD["Master Data<br/>Customers, Vendors,<br/>Products, Employees,<br/>Chart of Accounts"]
+        VF["Validation Framework<br/>P0/P1 Rules"]
+    end
 
-| Component | Injected Dependencies |
-|-----------|----------------------|
-| `SimulationEngine` | `TimeController`, `ExternalWorldManager`, `WorkflowOrchestrator`, `EventBus`, `SimulationMetrics` |
-| `WorkflowOrchestrator` | `AgentRegistry`, `ApprovalSystem`, `WorkflowConfig` |
-| `ApprovalSystem` | `AgentRegistry`, `EventBus` |
-| `AgentRegistry` | `DecisionEngine`, `AgentMemory` (factory), `ActionRegistry` |
-| `DecisionEngine` | `LLMClient`, `PromptManager`, `StatisticalModels`, `ResponseParser` |
-| `LLMClient` | `LLMConfig`, `LLMQueue`, `LLMMonitor`, `LLMBudgetManager`, `LLMRateLimiter` |
-| `ExternalWorldManager` | `StatisticalModels`, `BehaviorProfile` (factory), `EventBus` |
-| `EventBus` | `EventStore` (optional, for persistence) |
-| `EventStore` | Redis client |
+    subgraph Project2["Project 2 — Agent & Orchestration"]
+        AR["AgentRegistry<br/>12 Agents"]
+        WO["WorkflowOrchestrator<br/>ROLE_MAPPING"]
+        EB["EventBus<br/>8 Event Types"]
+        SM["Statistical Models<br/>6 Models"]
+        TC["TimeController<br/>Fiscal Calendar"]
+        AS["ApprovalSystem<br/>Threshold Chains"]
+    end
 
-### 0.4.4 Database and Schema Updates
+    subgraph Project3["Project 3 — Transaction Workflows"]
+        P2P["P2P Engine<br/>5 Generators"]
+        O2C["O2C Engine<br/>4 Generators"]
+        GLE["GL Engine<br/>Posting + Balances"]
+        DIS["Discrepancy System<br/>35+ Types"]
+        RWL["Rework Loop<br/>Fix Scenarios"]
+        PCM["Period Close<br/>Accruals + Close"]
+    end
 
-Project 2 does **not** create or modify any database schemas. All persistent state is managed through Redis with TTL-based lifecycle management. The schema for Redis key structures is defined as follows:
+    DB -->|"async session"| P2P & O2C & GLE & PCM
+    MD -->|"entity queries"| P2P & O2C
+    VF -->|"validation rules"| RWL
+    AR -->|"agent decisions"| P2P & O2C
+    WO -->|"transaction routing"| P2P & O2C
+    EB -->|"event publish/subscribe"| P2P & O2C & GLE & DIS & RWL & PCM
+    SM -->|"amounts, timing"| P2P & O2C
+    TC -->|"PeriodClosing events"| PCM
+    AS -->|"approval thresholds"| P2P & O2C & GLE
 
-| Key Pattern | Value Type | Module |
-|-------------|-----------|--------|
-| `agent:{uuid}:state` | JSON (AgentState serialization) | `app/agents/agent_registry.py` |
-| `agent:{uuid}:observations` | JSON list (max 1,000 entries) | `app/agents/agent_memory.py` |
-| `agent:{uuid}:reflections` | JSON list (max 100 entries) | `app/agents/agent_memory.py` |
-| `agent:{uuid}:embeddings` | Binary (384-dim float32 arrays) | `app/agents/agent_memory.py` |
-| `event:{uuid}` | JSONB (event payload) | `app/events/event_store.py` |
-| `simulation:{uuid}:metrics` | JSON (metrics snapshot) | `app/simulation/simulation_metrics.py` |
-| `llm_requests` (Stream) | Stream entries (prompt, metadata) | `app/llm/llm_queue.py` |
-| `llm:budget:{month}` | Float (monthly spend accumulator) | `app/llm/llm_monitor.py` |
+    style Project1 fill:#059669,color:#fff,stroke:#047857
+    style Project2 fill:#d97706,color:#fff,stroke:#b45309
+    style Project3 fill:#2563eb,color:#fff,stroke:#1e40af
+```
 
 ## 0.5 Technical Implementation
 
 ### 0.5.1 File-by-File Execution Plan
 
-Every file listed below **MUST** be created. Files are organized into execution groups ordered by dependency — foundational modules first, consumers last.
+**CRITICAL: Every file listed below MUST be created or modified.**
 
-**Group 1 — Project Scaffolding and Configuration:**
+**Group 1 — Core Transaction Infrastructure:**
 
-| Action | File Path | Purpose |
-|--------|-----------|---------|
-| CREATE | `pyproject.toml` | Project metadata, Python 3.11+ requirement, all dependency specifications |
-| CREATE | `requirements.txt` | Pinned production dependencies (13 packages) |
-| CREATE | `requirements-dev.txt` | Testing and development dependencies (5 packages) |
-| CREATE | `.env.example` | Environment variable template (7 variables: LLM_PROVIDER, LLM_MODEL, LLM_FALLBACK_MODEL, LLM_API_KEY, LLM_MAX_TOKENS, LLM_TEMPERATURE, REDIS_URL) |
-| CREATE | `app/__init__.py` | Root package initialization |
-| CREATE | `config/agents/agent_roles.yaml` | 12 agent role definitions with trait ranges and work schedules |
-| CREATE | `config/workflows/approval_thresholds.yaml` | Approval chains: PO ($5K/$25K/$100K), Invoice ($10K/$50K/$100K), JE ($50K) |
-| CREATE | `config/statistical/payment_timing.yaml` | 5-segment mixture model parameters (weights, μ, σ per segment) |
-| CREATE | `config/statistical/amount_distributions.yaml` | Log-normal parameters, customer size tiers, rounding rules |
-| CREATE | `config/llm/llm_config.yaml` | Provider settings, rate limits, budget, retry configuration |
+| Action | File Path | Description |
+|--------|-----------|-------------|
+| CREATE | `app/transactions/__init__.py` | Package init; exports `TransactionGenerator`, `GenerationContext`, `TransactionResult` |
+| CREATE | `app/transactions/base_generator.py` | Abstract `TransactionGenerator` base class defining the generate/validate/post contract; shared discrepancy trigger check, GL posting delegation, event publishing, retry/timeout wrappers using `tenacity`; `GenerationContext` Pydantic model carrying simulation_id, current_date, fiscal_period, discrepancy_config, rng_seed |
+| CREATE | `app/transactions/exceptions.py` | Custom exception hierarchy: `TransactionError` (base), `TransactionGenerationError`, `BalanceError`, `ThreeWayMatchError`, `DiscrepancyInjectionError`, `ReworkLoopError`, `PeriodClosedError`, `GLPostingError`, `PaymentAllocationError`, `ConcurrencyError` |
+| CREATE | `app/transactions/constants.py` | Shared constants: `TRANSACTION_PROCESSING_LIMITS`, `PERFORMANCE_THRESHOLDS`, `MEMORY_LIMITS`, `FINANCIAL_TOLERANCES`, `BATCH_LIMITS`, `CIRCUIT_BREAKER_CONFIG`, timeout matrices |
 
-**Group 2 — Infrastructure Layer (Event System, F-007):**
+**Group 2 — P2P Transaction Engine (5 generators):**
 
-| Action | File Path | Purpose |
-|--------|-----------|---------|
-| CREATE | `app/events/__init__.py` | Package exports: EventBus, EventStore, event types |
-| CREATE | `app/events/event_types.py` | 8 event dataclasses: TransactionCreated, TransactionCompleted, ApprovalRequired, ApprovalCompleted, DocumentGenerated, PeriodClosing, PeriodClosed, DiscrepancyDetected |
-| CREATE | `app/events/event_bus.py` | Dual-mode pub/sub: asyncio.Queue (<500/sec) with optional Redis Pub/Sub (>5,000/sec); priority handling, async dispatch |
-| CREATE | `app/events/event_store.py` | Event persistence with JSONB payloads, UUID indexing, query filters, replay capability |
-| CREATE | `app/events/event_handlers.py` | Default event handler registrations for cross-subsystem coordination |
+| Action | File Path | Description |
+|--------|-----------|-------------|
+| CREATE | `app/transactions/p2p/__init__.py` | Exports all P2P generators |
+| CREATE | `app/transactions/p2p/purchase_order_generator.py` | `PurchaseOrderGenerator` — weighted vendor selection, EOQ-based quantity calculation, price list lookup, approval routing per thresholds, PO header/lines creation, sequential numbering (PO-YYYY-NNNN), event publishing |
+| CREATE | `app/transactions/p2p/goods_receipt_generator.py` | `GoodsReceiptGenerator` — finds open POs, determines receipt date (PO date + lead time), quantity variance handling, receipt header/lines creation, inventory balance update, GL posting (DR Inventory, CR AP Accrual) |
+| CREATE | `app/transactions/p2p/vendor_invoice_processor.py` | `VendorInvoiceProcessor` — invoice creation from vendor, PO linkage, three-way match invocation, AP clerk routing via WorkflowOrchestrator, GL account coding, approval chain, GL posting (DR Expense/Asset, CR AP) |
+| CREATE | `app/transactions/p2p/three_way_matcher.py` | `ThreeWayMatcher` — quantity match (Receipt vs Invoice), price match (PO vs Invoice), extended amount validation, tolerance enforcement (price ±5%, quantity ±2%), returns `ThreeWayMatchResult` with match status, variances, and approval requirement flag |
+| CREATE | `app/transactions/p2p/vendor_payment_generator.py` | `VendorPaymentGenerator` — selects approved unpaid invoices, groups by vendor/terms, calculates payment amount (invoice - prior payments - discounts), payment method selection (check/ACH/wire), payment allocations, GL posting (DR AP, CR Cash; DR Discount if applicable) |
 
-**Group 3 — Statistical Models (F-006):**
+**Group 3 — O2C Transaction Engine (4 generators):**
 
-| Action | File Path | Purpose |
-|--------|-----------|---------|
-| CREATE | `app/statistical/__init__.py` | Package exports for all distribution models |
-| CREATE | `app/statistical/amount_distributions.py` | `AmountDistribution`: log-normal PO amounts (s=1.2, scale=5000), vendor invoice matching (95% within ±5%), customer order sizing by tier, rounding, discount logic |
-| CREATE | `app/statistical/payment_timing_model.py` | `PaymentTimingModel`: 5-segment mixture model with profile-weighted segment selection, weekend adjustment |
-| CREATE | `app/statistical/timing_models.py` | Approval processing time: Normal(μ=4hrs, σ=2hrs), escalation +1 day |
-| CREATE | `app/statistical/order_frequency_model.py` | `OrderFrequencyModel`: Poisson process with day-of-week multipliers (Mon 0.85× to Fri 1.2×) |
-| CREATE | `app/statistical/selection_models.py` | `SelectionModel`: Pareto 80/20 vendor selection, revenue-weighted customer selection, 70/30 repeat/new product selection |
+| Action | File Path | Description |
+|--------|-----------|-------------|
+| CREATE | `app/transactions/o2c/__init__.py` | Exports all O2C generators |
+| CREATE | `app/transactions/o2c/sales_order_generator.py` | `SalesOrderGenerator` — revenue-weighted customer selection, credit limit check (credit_limit vs current_ar_balance), product selection from purchase history, pricing with discounts, SO header/lines, sequential numbering (SO-YYYY-NNNN) |
+| CREATE | `app/transactions/o2c/shipment_generator.py` | `ShipmentGenerator` — finds open SOs ready to ship, determines ship date (order date + lead time), carrier selection, tracking number generation, shipment header/lines, inventory reduction, GL posting (DR COGS, CR Inventory) |
+| CREATE | `app/transactions/o2c/customer_invoice_generator.py` | `CustomerInvoiceGenerator` — creates invoice from shipped order, links to SO and shipment, calculates amounts from shipment quantities, payment terms from customer master, GL posting (DR AR, CR Revenue), sequential numbering (INV-YYYY-NNNN) |
+| CREATE | `app/transactions/o2c/customer_payment_processor.py` | `CustomerPaymentProcessor` — FIFO allocation (oldest invoice first), short pay handling (create write-off or leave open), overpay handling (create Unapplied Cash — no negative invoice balance), GL posting (DR Cash, CR AR; DR Discount, DR Bad Debt if applicable) |
 
-**Group 4 — LLM Integration (F-002):**
+**Group 4 — General Ledger Integration (4 classes):**
 
-| Action | File Path | Purpose |
-|--------|-----------|---------|
-| CREATE | `app/llm/__init__.py` | Package exports: LLMClient, PromptManager, LLMQueue, LLMMonitor |
-| CREATE | `app/llm/llm_config.py` | `LLMConfig` Pydantic model: provider, model, fallback_model, api_key, max_tokens, temperature, budget, rate limits |
-| CREATE | `app/llm/llm_client.py` | `LLMClient`: unified async interface wrapping `anthropic.AsyncAnthropic` and `openai.AsyncOpenAI`; tenacity retry (3 attempts, 2s/4s/10s); fallback model; cost tracking per request |
-| CREATE | `app/llm/llm_queue.py` | `LLMQueue`: Redis Streams (XADD/XREADGROUP), consumer group `llm_workers`, batch size 10, priority levels (critical/normal/low), max queue 1,000; `LLMRateLimiter`: per-minute limits; Circuit breaker: opens after 5 consecutive failures |
-| CREATE | `app/llm/llm_monitor.py` | `LLMMonitor`: metrics (total_requests, successful, failed, total_tokens, cost, avg/p95 latency); `LLMBudgetManager`: $100/month cap, 80% warning, 100% block |
-| CREATE | `app/llm/prompt_manager.py` | `PromptManager`: YAML template loading from `prompts/`, context assembly (agent + company + transaction), token estimation (4 chars ≈ 1 token), 1,500 token budget enforcement |
-| CREATE | `app/llm/response_parser.py` | `ResponseParser`: JSON extraction from LLM text, Pydantic schema validation, 3-retry loop on parse failure |
-| CREATE | `prompts/process_vendor_invoice.yaml` | Template: system persona + invoice/PO/receipt context → JSON response (match_status, gl_coding, notes, recommendation) |
-| CREATE | `prompts/approve_transaction.yaml` | Template: approver persona + transaction context → JSON response (decision, reasoning) |
-| CREATE | `prompts/match_documents.yaml` | Template: document matching context → JSON response (match results, variances) |
-| CREATE | `prompts/handle_exception.yaml` | Template: exception context + history → JSON response (resolution, escalation) |
-| CREATE | `prompts/generate_description.yaml` | Template: transaction context → JSON response (description text, tags) |
-| CREATE | `prompts/reconcile_account.yaml` | Template: account context + transactions → JSON response (reconciliation items, adjustments) |
+| Action | File Path | Description |
+|--------|-----------|-------------|
+| CREATE | `app/transactions/gl/__init__.py` | Exports GL engine, balance manager, accrual generator, period close manager |
+| CREATE | `app/transactions/gl/gl_posting_engine.py` | `GLPostingEngine` — journal entry header creation, balance validation (SUM(debits) = SUM(credits) within $0.01), account validation against Chart of Accounts (is_posting=TRUE), period validation (is period OPEN), sequential JE numbering, entry lines creation, balance update delegation, trial balance continuous check |
+| CREATE | `app/transactions/gl/account_balance_manager.py` | `AccountBalanceManager` — `SELECT FOR UPDATE` locking for concurrent access, normal balance direction enforcement (Asset/Expense: DR increases; Liability/Equity/Revenue: CR increases), running balance maintenance, period-based balance tracking |
+| CREATE | `app/transactions/gl/accrual_generator.py` | `AccrualGenerator` — AP accruals for GRNI (DR Expense/Asset, CR AP Accrual), AR accruals for shipped-not-invoiced (DR AR, CR Revenue), straight-line daily method (Total / Days in Period), reversing entries for next period |
+| CREATE | `app/transactions/gl/period_close_manager.py` | `PeriodCloseManager` — 10-step close process: validate all posted → generate accruals → generate deferrals → post depreciation → recurring JEs → account reconciliations → trial balance → validate financial statements → close period → open next period |
 
-**Group 5 — Agent System (F-001):**
+**Group 5 — Discrepancy Injection System (40+ components):**
 
-| Action | File Path | Purpose |
-|--------|-----------|---------|
-| CREATE | `app/agents/__init__.py` | Package exports: BaseAgent, AgentConfig, AgentState, AgentMemory, AgentRegistry |
-| CREATE | `app/agents/agent_config.py` | `AgentConfig` Pydantic/dataclass: agent_id, role, name, employee_id, company_id, traits dict (thoroughness/risk_tolerance/efficiency/compliance 0.0–1.0), work_hours, LLM settings; `AgentState` enum (IDLE/THINKING/ACTING/WAITING/ERROR) |
-| CREATE | `app/agents/agent_memory.py` | `AgentMemory`: observation_stream (max 1,000, ~500 bytes each), reflection_stream (max 100, ~2KB each); `add_observation()`, `retrieve_relevant(query, k)` via `all-MiniLM-L6-v2` cosine similarity, `generate_reflection()`, `get_recent(n)`, cleanup at 3,600s intervals |
-| CREATE | `app/agents/action_registry.py` | `ActionRegistry`: 14 action types (create_purchase_order through close_period); each with action_id, required_inputs, validation_rules, execute() method |
-| CREATE | `app/agents/decision_engine.py` | `DecisionEngine`: 4-layer pipeline — Statistical Layer (amounts, entities, timing, discrepancy triggers) → LLM Layer (conditional: descriptions, notes, edge cases) → Validation Layer (schema, range, business rules; max 3 retries) → Deterministic Layer (GL postings, balances, business rules) |
-| CREATE | `app/agents/agent_registry.py` | `AgentRegistry`: agent lifecycle management, role-based lookup, availability tracking, capacity monitoring; `AgentTimeoutManager`: consecutive timeout escalation (3 threshold), auto-restart with 60s cooldown |
-| CREATE | `app/agents/base_agent.py` | `BaseAgent` (ABC): constructor injection (config, memory, decision_engine, action_registry), async `run()` loop, `process_work_item()` abstract method, `make_decision()`, `_calculate_importance()`, metrics tracking; `WorkItem` and `WorkResult` dataclasses |
-| CREATE | `app/agents/specialized/__init__.py` | Specialized agent package exports |
-| CREATE | `app/agents/specialized/ap_clerk_agent.py` | `APClerkAgent`: vendor invoice processing, 3-way match, GL coding |
-| CREATE | `app/agents/specialized/ap_manager_agent.py` | `APManagerAgent`: invoice approval, exception handling |
-| CREATE | `app/agents/specialized/ar_clerk_agent.py` | `ARClerkAgent`: sales order processing, customer invoicing, payment application |
-| CREATE | `app/agents/specialized/ar_manager_agent.py` | `ARManagerAgent`: AR approval, dispute resolution |
-| CREATE | `app/agents/specialized/purchasing_agent.py` | `PurchasingAgent`: purchase order creation, vendor selection |
-| CREATE | `app/agents/specialized/purchasing_manager_agent.py` | `PurchasingManagerAgent`: PO approval, vendor management |
-| CREATE | `app/agents/specialized/warehouse_clerk_agent.py` | `WarehouseClerkAgent`: goods receipt, shipment processing |
-| CREATE | `app/agents/specialized/warehouse_manager_agent.py` | `WarehouseManagerAgent`: warehouse operations oversight |
-| CREATE | `app/agents/specialized/accountant_agent.py` | `AccountantAgent`: journal entry creation, reconciliation |
-| CREATE | `app/agents/specialized/senior_accountant_agent.py` | `SeniorAccountantAgent`: JE approval, period-end procedures |
-| CREATE | `app/agents/specialized/controller_agent.py` | `ControllerAgent`: high-value approvals, period close oversight |
-| CREATE | `app/agents/specialized/cfo_agent.py` | `CFOAgent`: strategic approvals (>$100K), financial oversight |
+| Action | File Path | Description |
+|--------|-----------|-------------|
+| CREATE | `app/discrepancies/__init__.py` | Exports injector, ground truth generator, catalog |
+| CREATE | `app/discrepancies/discrepancy_injector.py` | `DiscrepancyInjector` — rate-based trigger check (random vs configured rate), type selection (weighted by category), parameter validation against bounds, auto-adjust to bounds if enabled, ground truth linkage |
+| CREATE | `app/discrepancies/ground_truth_generator.py` | `GroundTruthGenerator` — creates ground truth records with full schema (16 fields), JSON and CSV output generation |
+| CREATE | `app/discrepancies/discrepancy_catalog.py` | `DiscrepancyCatalog` — maps 35+ type codes to implementation classes, parameter bounds, base rates, categories, difficulties |
+| CREATE | `app/discrepancies/base_discrepancy.py` | Abstract `BaseDiscrepancy` class defining `inject()` → `Tuple[ModifiedTransaction, GroundTruth]` contract |
+| CREATE | `app/discrepancies/p2p/__init__.py` | P2P discrepancy init |
+| CREATE | `app/discrepancies/p2p/duplicate_invoice.py` | P2P-001: Duplicate Invoice — exact/near-duplicate with configurable number variation, date proximity (1–90 days), amount variation (0–5%) |
+| CREATE | `app/discrepancies/p2p/price_mismatch.py` | P2P-002: Invoice/PO Price Mismatch — price variance outside ±5% tolerance |
+| CREATE | `app/discrepancies/p2p/quantity_variance.py` | P2P-003: Invoice/Receipt Quantity Variance — quantity variance outside ±2% tolerance |
+| CREATE | `app/discrepancies/p2p/missing_po.py` | P2P-004: Missing Purchase Order — invoice without PO reference |
+| CREATE | `app/discrepancies/p2p/po_not_approved.py` | P2P-005: PO Not Approved — bypass or insufficient approval level |
+| CREATE | `app/discrepancies/p2p/invoice_before_receipt.py` | P2P-006: Invoice Before Receipt — temporal sequence violation |
+| CREATE | `app/discrepancies/p2p/round_dollar_invoice.py` | P2P-007: Round-Dollar Invoice — fraud indicator (exact round amounts) |
+| CREATE | `app/discrepancies/p2p/weekend_processing.py` | P2P-008: Weekend Processing — unusual timing indicator |
+| CREATE | `app/discrepancies/p2p/duplicate_payment.py` | P2P-009: Duplicate Payment — same vendor/amount/period |
+| CREATE | `app/discrepancies/p2p/payment_before_invoice.py` | P2P-010: Payment Before Invoice Date — temporal anomaly |
+| CREATE | `app/discrepancies/p2p/unapproved_vendor.py` | P2P-011: Vendor Not in Approved List |
+| CREATE | `app/discrepancies/p2p/split_po.py` | P2P-012: Split PO to Avoid Approval threshold |
+| CREATE | `app/discrepancies/p2p/fictitious_vendor.py` | P2P-013: Fictitious Vendor — address/phone matches employee |
+| CREATE | `app/discrepancies/p2p/vendor_concentration.py` | P2P-014: Unusual Vendor Concentration — disproportionate spend |
+| CREATE | `app/discrepancies/p2p/ghost_expense.py` | P2P-015: Ghost Expense — no supporting documentation |
+| CREATE | `app/discrepancies/o2c/__init__.py` | O2C discrepancy init |
+| CREATE | `app/discrepancies/o2c/duplicate_customer_invoice.py` | O2C-001: Duplicate Customer Invoice |
+| CREATE | `app/discrepancies/o2c/invoice_without_shipment.py` | O2C-002: Invoice Without Shipment |
+| CREATE | `app/discrepancies/o2c/credit_limit_exceeded.py` | O2C-003: Credit Limit Exceeded |
+| CREATE | `app/discrepancies/o2c/short_payment.py` | O2C-004: Short Payment |
+| CREATE | `app/discrepancies/o2c/overpayment_not_returned.py` | O2C-005: Overpayment Not Returned |
+| CREATE | `app/discrepancies/o2c/revenue_recognition_timing.py` | O2C-006: Revenue Recognition Timing Error |
+| CREATE | `app/discrepancies/o2c/fictitious_customer.py` | O2C-007: Fictitious Customer |
+| CREATE | `app/discrepancies/o2c/round_tripping.py` | O2C-008: Round-Tripping |
+| CREATE | `app/discrepancies/o2c/channel_stuffing.py` | O2C-009: Channel Stuffing |
+| CREATE | `app/discrepancies/o2c/side_agreements.py` | O2C-010: Side Agreements Not Disclosed |
+| CREATE | `app/discrepancies/gl/__init__.py` | GL discrepancy init |
+| CREATE | `app/discrepancies/gl/unbalanced_journal.py` | GL-001: Unbalanced Journal Entry |
+| CREATE | `app/discrepancies/gl/journal_no_approval.py` | GL-002: Journal Entry Without Approval |
+| CREATE | `app/discrepancies/gl/suspicious_adjusting.py` | GL-003: Period-End Adjusting Entry |
+| CREATE | `app/discrepancies/gl/unusual_account_combo.py` | GL-004: Unusual Account Combination |
+| CREATE | `app/discrepancies/gl/manual_override.py` | GL-005: Manual Entry Overriding System Entry |
+| CREATE | `app/discrepancies/control/__init__.py` | Control discrepancy init |
+| CREATE | `app/discrepancies/control/sod_violation.py` | CTL-001: Segregation of Duties Violation |
+| CREATE | `app/discrepancies/control/self_approval.py` | CTL-002: Same User Created and Approved |
+| CREATE | `app/discrepancies/control/approval_limit_exceeded.py` | CTL-003: Approval Limit Exceeded |
+| CREATE | `app/discrepancies/control/backdated_transaction.py` | CTL-004: Backdated Transaction |
+| CREATE | `app/discrepancies/control/holiday_transaction.py` | CTL-005: Transaction on Holiday/Weekend |
 
-**Group 6 — Orchestration Layer (F-003, F-004):**
+**Group 6 — Intelligent Rework Loop (4 classes):**
 
-| Action | File Path | Purpose |
-|--------|-----------|---------|
-| CREATE | `app/orchestration/__init__.py` | Package exports: WorkflowOrchestrator, ApprovalSystem, TimeController |
-| CREATE | `app/orchestration/workflow_orchestrator.py` | `WorkflowOrchestrator`: transaction type → agent role mapping, idle agent selection (smallest queue), `WorkflowInstance` tracking, queue management; routing SLA <500ms |
-| CREATE | `app/orchestration/transaction_orchestrator.py` | `TransactionOrchestrator`: artifact tracking per transaction type, completeness validation, lifecycle management (register → add_artifact → check_completeness → mark_complete), chain retrieval |
-| CREATE | `app/orchestration/approval_system.py` | `ApprovalSystem`: threshold-based approval chains (PO: none/$5K/$25K/$100K, Invoice: none/$10K/$50K/$100K, JE: $50K), approval request creation, decision processing, rejection escalation |
-| CREATE | `app/orchestration/time_controller.py` | `TimeController`: date/time state, `advance_to_next_business_day()`, `advance_by_hours()`, business calendar queries, fiscal period queries |
-| CREATE | `app/orchestration/business_calendar.py` | `BusinessCalendar`: US Federal holidays (2024–2026) via `holidays` library, company holidays, half days, working hours 8:00–17:00, lunch break 12:00–13:00 |
-| CREATE | `app/orchestration/fiscal_calendar.py` | `FiscalCalendar`: configurable fiscal year start month, monthly/quarterly periods, period lifecycle (open/closing/closed), quarter-end and year-end flags |
+| Action | File Path | Description |
+|--------|-----------|-------------|
+| CREATE | `app/rework/__init__.py` | Exports rework engine, classifier, catalog, executor |
+| CREATE | `app/rework/rework_loop_engine.py` | `ReworkLoopEngine` — orchestrates classify → select fix → apply → re-validate → escalate cycle; max 3 attempts; tracks fix scenarios used and success rates; escalates if >5% failure rate |
+| CREATE | `app/rework/failure_classifier.py` | `FailureClassifier` — queries discrepancy table to determine if failure is planned discrepancy (check within/outside parameters) or unplanned error; returns classification result |
+| CREATE | `app/rework/fix_scenario_catalog.py` | `FixScenarioCatalog` — 20+ fix scenarios (ADJUST_AMOUNT_TO_RANGE, FIX_DATE_SEQUENCE, CORRECT_ENTITY_REFERENCE, REGENERATE_GL_ENTRY, RECALCULATE_BALANCE, FIX_APPROVAL_CHAIN, CORRECT_PERIOD_ASSIGNMENT, RELINK_DOCUMENTS, FIX_THREE_WAY_MATCH, ADJUST_PAYMENT_ALLOCATION) with success rates and step definitions |
+| CREATE | `app/rework/fix_scenario_executor.py` | `FixScenarioExecutor` — executes fix scenario steps against a transaction; handles per-scenario timeout (10s); logs fix attempt details |
 
-**Group 7 — External World Simulation (F-005):**
+**Group 7 — Configuration Files:**
 
-| Action | File Path | Purpose |
-|--------|-----------|---------|
-| CREATE | `app/external_world/__init__.py` | Package exports: ExternalWorldManager, BehaviorProfile |
-| CREATE | `app/external_world/external_entity_manager.py` | `ExternalWorldManager`: entity pools (customers, vendors, banks, carriers), tiered distribution (Strategic 10%, Standard 30%, Transactional 60%), profile assignment, interaction generation |
-| CREATE | `app/external_world/behavior_profiles.py` | `BehaviorProfile`: payment behavior (segment, variance, short_pay_rate, dispute_rate), order behavior (frequency, size_pattern, seasonality), invoice behavior (timing, accuracy, response_time) |
-| CREATE | `app/external_world/customer_simulator.py` | `CustomerSimulator`: order generation, payment simulation, dispute handling |
-| CREATE | `app/external_world/vendor_simulator.py` | `VendorSimulator`: invoice generation, goods delivery, inquiry response |
-| CREATE | `app/external_world/bank_simulator.py` | `BankSimulator`: bank statement generation, payment processing simulation |
+| Action | File Path | Description |
+|--------|-----------|-------------|
+| CREATE | `config/discrepancies/p2p_discrepancies.yaml` | 15 P2P discrepancy type definitions with codes, categories, difficulties, base rates, parameter bounds |
+| CREATE | `config/discrepancies/o2c_discrepancies.yaml` | 10 O2C discrepancy type definitions |
+| CREATE | `config/discrepancies/gl_discrepancies.yaml` | 5 GL + 5 Control discrepancy type definitions |
+| CREATE | `config/discrepancies/discrepancy_rates.yaml` | Global injection rate, difficulty distribution (easy:0.70, medium:0.30, hard:0.00), auto-adjust flag |
+| CREATE | `config/transactions/posting_rules.yaml` | GL posting account mappings per transaction type (e.g., goods_receipt: DR Inventory, CR AP Accrual) |
+| CREATE | `config/transactions/period_close.yaml` | Period close configuration: accrual rules, depreciation method, recurring JE templates, reconciliation targets |
+| MODIFY | `config/workflows/approval_thresholds.yaml` | Verify existing thresholds cover P3 needs; add any P3-specific rules |
 
-**Group 8 — Simulation Engine (Top-level Coordinator):**
+**Group 8 — Tests and Documentation:**
 
-| Action | File Path | Purpose |
-|--------|-----------|---------|
-| CREATE | `app/simulation/__init__.py` | Package exports: SimulationEngine, DayContext |
-| CREATE | `app/simulation/simulation_engine.py` | `SimulationEngine`: main async loop (advance day → generate interactions → route transactions → process agent work → persist events), daily summary logging |
-| CREATE | `app/simulation/day_context.py` | `DayContext`: current simulation date, fiscal period, active agents, daily transaction counts, daily metrics snapshot |
-| CREATE | `app/simulation/simulation_metrics.py` | `SimulationMetrics`: transactions generated, agents active, avg utilization, LLM requests/cost, day duration; daily/monthly aggregation |
+| Action | File Path | Description |
+|--------|-----------|-------------|
+| CREATE | `tests/test_transactions/__init__.py` | Transaction test package init |
+| CREATE | `tests/test_transactions/test_base_generator.py` | Abstract base class contract tests |
+| CREATE | `tests/test_transactions/test_p2p_cycle.py` | Full P2P cycle integration test, GL balance assertions, artifact completeness |
+| CREATE | `tests/test_transactions/test_o2c_cycle.py` | Full O2C cycle integration test, credit check, FIFO allocation |
+| CREATE | `tests/test_transactions/test_gl_posting.py` | GL posting engine: balance validation, trial balance, concurrent posting, rollback atomicity |
+| CREATE | `tests/test_transactions/test_three_way_matching.py` | Tolerance checks, match statuses, variance calculations |
+| CREATE | `tests/test_transactions/test_period_close.py` | Period close: accruals, trial balance, state transitions |
+| CREATE | `tests/test_discrepancies/__init__.py` | Discrepancy test package init |
+| CREATE | `tests/test_discrepancies/test_discrepancy_injection.py` | Rate control, type distribution, parameter bounds |
+| CREATE | `tests/test_discrepancies/test_ground_truth.py` | Schema completeness, transaction linkage, coverage |
+| CREATE | `tests/test_discrepancies/test_individual_discrepancies.py` | Parameterized tests for all 35+ types |
+| CREATE | `tests/test_discrepancies/test_discrepancy_catalog.py` | Catalog registration, parameter bounds |
+| CREATE | `tests/test_rework/__init__.py` | Rework test package init |
+| CREATE | `tests/test_rework/test_rework_loop.py` | End-to-end rework loop, 3-attempt limit, escalation |
+| CREATE | `tests/test_rework/test_failure_classifier.py` | Planned vs. unplanned classification |
+| CREATE | `tests/test_rework/test_fix_scenarios.py` | Scenario selection, execution, exclusion |
+| MODIFY | `tests/conftest.py` | Add P3 shared fixtures |
 
-**Group 9 — Error Handling (Cross-cutting):**
+**Group 9 — Project Configuration Updates:**
 
-| Action | File Path | Purpose |
-|--------|-----------|---------|
-| CREATE | `app/errors/__init__.py` | Package initialization |
-| CREATE | `app/errors/error_handlers.py` | `LLMErrorHandler` (rate limit → wait/retry, timeout → reduce tokens/retry, auth → fatal), `AgentErrorHandler` (validation → skip, LLM error → retry 3x, DB error → escalate), `WorkflowErrorHandler` (retry 3x then mark failed, notify monitoring) |
+| Action | File Path | Description |
+|--------|-----------|-------------|
+| MODIFY | `requirements.txt` | Add sqlalchemy, psycopg2-binary, aiofiles, pydantic-settings, pandas |
+| MODIFY | `requirements-dev.txt` | Add pytest-mock, hypothesis |
+| MODIFY | `pyproject.toml` | Update dependencies, coverage paths, markers |
+| MODIFY | `.env.example` | Add 11 P3 environment variables |
+| MODIFY | `pytest.ini` | Add P3 test markers |
 
-**Group 10 — Tests (≥80% coverage target):**
+### 0.5.2 Implementation Approach
 
-| Action | File Path | Purpose |
-|--------|-----------|---------|
-| CREATE | `tests/__init__.py` | Test package initialization |
-| CREATE | `tests/conftest.py` | Shared fixtures: mock Redis, mock LLM client, sample AgentConfig, EventBus instances |
-| CREATE | `tests/test_agents/test_base_agent.py` | BaseAgent lifecycle, state transitions, work queue, metrics |
-| CREATE | `tests/test_agents/test_agent_memory.py` | Observation CRUD, reflection generation, semantic retrieval, cleanup |
-| CREATE | `tests/test_agents/test_agent_config.py` | Trait boundary validation, serialization |
-| CREATE | `tests/test_agents/test_decision_engine.py` | 4-layer pipeline, LLM fallback, validation retries |
-| CREATE | `tests/test_agents/test_action_registry.py` | Action registration, input validation, execution |
-| CREATE | `tests/test_agents/test_specialized_agents.py` | All 12 agent types: work item processing, decision delegation |
-| CREATE | `tests/test_llm/test_llm_client.py` | Provider abstraction, retry logic, fallback, cost recording (mocked APIs) |
-| CREATE | `tests/test_llm/test_prompt_manager.py` | Template loading, context formatting, token estimation |
-| CREATE | `tests/test_llm/test_llm_queue.py` | Enqueue/dequeue, priority ordering, batch processing, circuit breaker |
-| CREATE | `tests/test_llm/test_llm_monitor.py` | Metrics accumulation, budget warning/block triggers |
-| CREATE | `tests/test_llm/test_response_parser.py` | Valid JSON extraction, schema violation handling, retry |
-| CREATE | `tests/test_orchestration/test_workflow_orchestrator.py` | Transaction routing, agent selection, queue management |
-| CREATE | `tests/test_orchestration/test_approval_system.py` | Threshold enforcement across all transaction types |
-| CREATE | `tests/test_orchestration/test_transaction_orchestrator.py` | Artifact registration, completeness validation |
-| CREATE | `tests/test_orchestration/test_time_controller.py` | Day advancement, holiday skipping, fiscal period queries |
-| CREATE | `tests/test_external_world/test_external_entity_manager.py` | Entity pool creation, tier distribution verification |
-| CREATE | `tests/test_external_world/test_behavior_profiles.py` | Profile assignment, parameter ranges |
-| CREATE | `tests/test_external_world/test_simulators.py` | Customer, vendor, bank interaction generation |
-| CREATE | `tests/test_statistical/test_payment_timing_model.py` | Segment selection, distribution sampling, weekend adjustment |
-| CREATE | `tests/test_statistical/test_amount_distributions.py` | Log-normal sampling, rounding, discount application |
-| CREATE | `tests/test_statistical/test_order_frequency_model.py` | Poisson generation, day-of-week effects |
-| CREATE | `tests/test_statistical/test_selection_models.py` | Pareto vendor selection, revenue-weighted customer |
-| CREATE | `tests/test_events/test_event_bus.py` | Pub/sub, async dispatch, priority handling |
-| CREATE | `tests/test_events/test_event_store.py` | Persistence, query filters, event replay |
-| CREATE | `tests/test_simulation/test_simulation_engine.py` | Daily loop execution, subsystem coordination |
+The implementation follows a foundation-first strategy that establishes core infrastructure before building domain-specific generators:
 
-### 0.5.2 Implementation Approach per File
+- **Establish feature foundation** by creating the exception hierarchy (`app/transactions/exceptions.py`), constants (`app/transactions/constants.py`), and base generator class (`app/transactions/base_generator.py`) first — all subsequent generators inherit from this base
+- **Build GL integration next** as the foundational posting layer — every P2P and O2C generator ultimately delegates to `GLPostingEngine` for journal entry creation, so it must be functional before transaction generators can produce complete outputs
+- **Implement P2P generators in sequence** following the natural business flow: PurchaseOrderGenerator → GoodsReceiptGenerator → VendorInvoiceProcessor (which depends on ThreeWayMatcher) → VendorPaymentGenerator — each generator depends on the artifacts produced by its predecessor
+- **Implement O2C generators in sequence** following its natural flow: SalesOrderGenerator → ShipmentGenerator → CustomerInvoiceGenerator → CustomerPaymentProcessor
+- **Layer in discrepancy injection** after generators produce clean transactions — the `DiscrepancyInjector` wraps around each generator, modifying transactions before persistence and creating ground truth records
+- **Add the rework loop** after both generators and discrepancy injection are functional — the rework engine validates generated transactions and applies fix scenarios for unintentional errors
+- **Complete with period close** processing, which depends on all transaction types being generatable and all GL postings being functional
+- **Integrate into SimulationEngine** last, extending the composition root to accept and orchestrate all P3 subsystems within the existing 5-step daily pipeline
 
-The implementation follows a strict bottom-up dependency order to ensure that each module's dependencies are available when it is built:
-
-- **Establish project scaffolding** by creating `pyproject.toml`, `requirements.txt`, `.env.example`, and the complete directory structure with `__init__.py` files
-- **Build the infrastructure layer first** (Event System F-007) since it is consumed by nearly every other subsystem for coordination
-- **Build statistical models next** (F-006) since they are pure-function modules with no internal dependencies beyond NumPy/SciPy
-- **Build LLM integration** (F-002) since it provides the AI capability layer consumed by the Decision Engine
-- **Build the agent system** (F-001) which combines statistical models and LLM integration through the Decision Engine
-- **Build orchestration** (F-003, F-004) which routes work to agents and manages time progression
-- **Build external world simulation** (F-005) which generates the entity interactions that drive agent work
-- **Build the simulation engine** last, as the composition root that wires all subsystems together
-- **Implement comprehensive test coverage** for each module immediately after its source code is created
-
-### 0.5.3 User Interface Design
-
-This project has **no user interface component**. Project 2 is a purely backend simulation engine (`README.md`, lines 685–690). All user-facing interfaces (Admin UI, dashboard visualizations, user management) are explicitly deferred to Project 4. Interaction with the engine is entirely programmatic through Python method invocations and configuration file loading.
+For files that reference any user-provided Figma URLs: No Figma URLs were specified for this project. All components are backend Python services with no UI elements.
 
 ## 0.6 Scope Boundaries
 
 ### 0.6.1 Exhaustively In Scope
 
-All file paths listed below represent the complete set of artifacts that must be created for Project 2. Trailing wildcards denote file groups where patterns apply.
+**All feature source files (trailing wildcards applied):**
 
-**Core source modules:**
+- `app/transactions/**/*.py` — All transaction generators (base, P2P, O2C, GL), exception hierarchy, constants, context models
+- `app/discrepancies/**/*.py` — Discrepancy injector, ground truth generator, catalog, 35+ individual discrepancy implementations (P2P, O2C, GL, Control)
+- `app/rework/**/*.py` — Rework loop engine, failure classifier, fix scenario catalog, fix scenario executor
 
-| Scope Pattern | Description |
-|---------------|-------------|
-| `app/agents/**/*.py` | All agent framework source: base agent, config, memory, registry, action registry, decision engine, and 12 specialized agent implementations |
-| `app/llm/**/*.py` | All LLM integration source: client, config, queue, monitor, prompt manager, response parser |
-| `app/orchestration/**/*.py` | All orchestration source: workflow orchestrator, transaction orchestrator, approval system, time controller, business calendar, fiscal calendar |
-| `app/external_world/**/*.py` | All external world simulation source: entity manager, behavior profiles, customer/vendor/bank simulators |
-| `app/statistical/**/*.py` | All statistical model source: amount distributions, payment timing, order frequency, selection models, timing models |
-| `app/events/**/*.py` | All event system source: event bus, event store, event types, event handlers |
-| `app/simulation/**/*.py` | Simulation engine source: engine, day context, metrics |
-| `app/errors/**/*.py` | Cross-cutting error handlers: LLM, agent, and workflow error handling |
+**All feature test files:**
 
-**Prompt templates:**
+- `tests/test_transactions/**/*.py` — Unit and integration tests for P2P cycles, O2C cycles, GL posting, three-way matching, period close, base generator
+- `tests/test_discrepancies/**/*.py` — Discrepancy injection rate tests, ground truth completeness, individual discrepancy type tests (parameterized), catalog tests
+- `tests/test_rework/**/*.py` — Rework loop end-to-end, failure classification, fix scenario selection and execution
 
-| Scope Pattern | Description |
-|---------------|-------------|
-| `prompts/*.yaml` | All 6 YAML prompt templates: process_vendor_invoice, approve_transaction, match_documents, handle_exception, generate_description, reconcile_account |
+**Integration points (specific files and line ranges where modifications are required):**
+
+- `app/simulation/simulation_engine.py` — Constructor extension (add P3 subsystem parameters), `_generate_interactions()` (invoke P3 generators), `_route_transactions()` (discrepancy injection pipeline), finalization step (rework loop validation)
+- `app/simulation/simulation_metrics.py` — New P3 metric fields in `DailyMetricsSnapshot` and `MonthlyMetricsAggregate`
+- `app/simulation/day_context.py` — P3-specific daily context fields (open POs, pending invoices, unposted GL entries)
+- `app/errors/error_handlers.py` — New `TransactionErrorHandler` class with P3 retry/circuit breaker policies
+- `app/orchestration/transaction_orchestrator.py` — Potential `REQUIRED_ARTIFACTS` extensions for P3-specific artifact types
+- `tests/conftest.py` — P3 shared fixtures
 
 **Configuration files:**
 
-| Scope Pattern | Description |
-|---------------|-------------|
-| `config/agents/*.yaml` | Agent role definitions with trait ranges |
-| `config/workflows/*.yaml` | Approval threshold configurations |
-| `config/statistical/*.yaml` | Statistical model parameters (payment timing, amount distributions) |
-| `config/llm/*.yaml` | LLM provider and budget configuration |
+- `config/discrepancies/*.yaml` — All 4 discrepancy configuration files (p2p, o2c, gl, rates)
+- `config/transactions/*.yaml` — All 2 transaction configuration files (posting_rules, period_close)
+- `config/workflows/approval_thresholds.yaml` — Verification of existing coverage for P3 approval requirements
 
-**Test files:**
+**Project configuration:**
 
-| Scope Pattern | Description |
-|---------------|-------------|
-| `tests/test_agents/**/*.py` | Agent system tests: base agent, memory, config, decision engine, action registry, all 12 specialized agents |
-| `tests/test_llm/**/*.py` | LLM integration tests: client, prompt manager, queue, monitor, response parser |
-| `tests/test_orchestration/**/*.py` | Orchestration tests: workflow, approval, transaction orchestrator, time controller |
-| `tests/test_external_world/**/*.py` | External world tests: entity manager, behavior profiles, simulators |
-| `tests/test_statistical/**/*.py` | Statistical model tests: payment timing, amounts, order frequency, selection |
-| `tests/test_events/**/*.py` | Event system tests: event bus, event store |
-| `tests/test_simulation/**/*.py` | Simulation engine tests: daily loop, metrics |
-| `tests/conftest.py` | Shared test fixtures and mock factories |
+- `.env.example` — 11 new P3 environment variables
+- `requirements.txt` — 5 new production dependencies
+- `requirements-dev.txt` — 2 new test dependencies
+- `pyproject.toml` — Updated dependencies, coverage paths, markers
+- `pytest.ini` — 5 new P3 test markers
 
-**Project root files:**
+**Documentation:**
 
-| File | Description |
-|------|-------------|
-| `pyproject.toml` | Project metadata, dependency specifications, build configuration |
-| `requirements.txt` | Pinned production dependency versions |
-| `requirements-dev.txt` | Development and testing dependency versions |
-| `.env.example` | Environment variable template |
-| `pytest.ini` or `setup.cfg` | Test runner configuration |
-
-**Integration touchpoints within scope:**
-
-| Integration | Scope |
-|-------------|-------|
-| Project 1 REST API | Read-only HTTP queries for master data (customers, vendors, products, employees) |
-| Redis | Caching (agent state, 24h TTL), queuing (LLM requests via Streams), persistence (events, 7d TTL), memory storage (observations 30d, reflections 30d) |
-| Anthropic Claude API | Async completions via `anthropic.AsyncAnthropic` (Claude Sonnet 4, Claude Haiku 4) |
-| OpenAI / Azure OpenAI API | Async completions via `openai.AsyncOpenAI` (GPT-4 Turbo, GPT-3.5 Turbo) |
-| sentence-transformers | Local embedding generation via `all-MiniLM-L6-v2` for agent memory retrieval |
+- `README.md` — Feature section for P3 transaction workflows, discrepancy injection, and rework loop
 
 ### 0.6.2 Explicitly Out of Scope
 
-The following items are explicitly excluded from Project 2 as documented in the specification (`README.md`, lines 653–704):
+**Document Generation (Project 4):**
+- PDF document creation, templates, and styling
+- Template rendering engine and document variety
+- CDM 3.0 export implementation (CSV/JSON/Parquet)
+- Export job execution
 
-**Transaction Table Population (Project 3 responsibility):**
-- Actual writing to transaction tables (purchase_orders, invoices, etc.)
-- Journal entry posting logic
-- GL account balance updates
-- Invoice matching logic implementation
-- Payment allocation logic
+**Admin UI (Project 4):**
+- Frontend components of any kind
+- Transaction viewing or discrepancy visualization UI
+- Dashboard or reporting interfaces
 
-**Discrepancy Injection Logic (Project 3 responsibility):**
-- Discrepancy detection algorithms
-- Ground truth label generation
-- Specific discrepancy type implementations
-- Discrepancy parameter tuning
+**Advanced Discrepancies (Phase 2):**
+- Hard difficulty discrepancies (distribution is `hard: 0.00` in MVP)
+- Complex multi-period fraud schemes
+- Multi-entity collusion patterns
 
-**Document Generation (Project 4 responsibility):**
-- PDF document creation and templates
-- Document styling and template rendering engine
+**Multi-Company Features (Phase 2):**
+- Intercompany transactions
+- Consolidation across entities
+- Multi-currency support
 
-**Export Functionality (Project 4 responsibility):**
-- CDM 3.0 export implementation
-- CSV/JSON export logic and job execution
+**Tax and Compliance:**
+- Sales tax, VAT, or withholding tax calculations
+- SOX controls enforcement or audit workflow automation
+- Segregation of duties enforcement (note: CTL-001 _simulates_ SoD violations as discrepancies but does not _enforce_ SoD)
 
-**Admin UI (Project 4 responsibility):**
-- Frontend components (React/Vue)
-- Dashboard visualizations
-- User management UI
+**External Integrations:**
+- Bank feeds, payment gateways, or EDI connections
+- Real external API integrations (only simulated via P2's ExternalWorldManager)
 
-**Advanced Agent Features (deferred to future phases):**
-- Complex multi-agent negotiations
-- Agent learning/adaptation beyond basic memory
-- Advanced planning beyond daily/weekly cycles
+**Reporting and BI:**
+- Financial report generators
+- Dashboards or BI tool integrations
+- Data warehouse loading
 
-**Infrastructure and Operations:**
-- Docker, Kubernetes, Helm charts, or CI/CD pipelines
-- Prometheus, Grafana, or APM integration (log to stdout only)
-- API Gateway, rate limiting infrastructure, API versioning
-- Backup/disaster recovery systems
-- Authentication/authorization modifications (use Project 1's existing auth)
+**Workflow Automation:**
+- External workflow engines (Airflow, Prefect, Celery)
+- All orchestration uses in-memory code within the Python asyncio event loop
 
-**Performance optimizations beyond specification targets:**
-- Optimizing beyond the stated SLAs (e.g., sub-100ms routing is not required)
-- Refactoring of existing code in Project 1
+**Performance Optimization Beyond Specification:**
+- Horizontal scaling of transaction generators
+- Database sharding or read replicas
+- Caching layers beyond the specified `ENABLE_TRANSACTION_CACHING` toggle
 
-**Unrelated features or modules:**
-- Any module not listed in the module hierarchy from `README.md` lines 2146–2246
-- Any subsystem not mapped to features F-001 through F-007
+**Unrelated Existing Code:**
+- Refactoring of Project 2 agent personalities or decision engine logic
+- Changes to LLM integration, prompt templates, or cost monitoring
+- Redis schema changes or EventStore TTL modifications
+- Modifications to the 12 specialized agent implementations beyond integration consumption
 
 ## 0.7 Rules for Feature Addition
 
-### 0.7.1 Architectural and Design Patterns
+### 0.7.1 Architectural Conventions
 
-- **Every specialized agent MUST extend `BaseAgent`** and implement the `process_work_item()` abstract method. No agent should bypass the base class framework for work processing, decision-making, or memory recording (`README.md`, lines 772–890)
-- **The 4-layer Decision Engine pipeline is inviolable**: Statistical Layer → LLM Layer (conditional) → Validation Layer → Deterministic Layer. No agent or subsystem may skip layers or reorder them. Financial calculations (GL postings, balance updates) are **exclusively** computed in the Deterministic Layer and must never be LLM-generated (`README.md`, lines 142–169)
-- **All data contracts at subsystem boundaries must use Pydantic V2 models** for validation. Raw dictionaries may be used internally within a module, but all cross-module interfaces must be typed and validated
-- **The Event Bus is the sole mechanism for cross-subsystem notifications**. Direct method calls between subsystems are only permitted for synchronous queries (e.g., TimeController calendar lookups). All asynchronous coordination must flow through `EventBus.publish()` and `EventBus.subscribe()`
-- **Constructor injection is required for all dependencies**. No module should instantiate its own dependencies via `import` and direct construction. The `SimulationEngine` serves as the composition root
+- **Constructor Injection (ADR-003)**: All P3 subsystems MUST receive dependencies through constructor parameters. No service locator pattern, no global state, no DI framework. All constructor parameters MUST be `Optional` to enable partial composition for testing.
+- **Pydantic V2 Data Contracts**: Every data model crossing subsystem boundaries MUST be a Pydantic V2 `BaseModel` with explicit field types, validators, and `model_config`. Use `model_dump()` and `model_validate()` for serialization.
+- **EventBus for Async Notifications (ADR-001)**: All cross-subsystem asynchronous notifications MUST flow through the existing `EventBus`. Direct method calls between subsystems are permitted only for synchronous data flow within the same processing pipeline.
+- **Structured Logging (structlog)**: ALL logging MUST use `structlog` with JSON output to stdout only. No file handlers, no external logging services. Every log entry MUST include: `timestamp`, `service_name` ("transactions"), `component` (class name), `level`, `message`, `trace_id`, `simulation_id`. Credential scrubbing MUST be applied to all context dictionaries.
+- **Deterministic Reproducibility**: All random operations MUST use seeded `random.Random` instances (Python stdlib) passed via `GenerationContext`. No calls to `random.random()` or `random.choice()` on the module-level RNG. This ensures identical seeds produce identical transaction sequences.
 
-### 0.7.2 Integration Requirements with Existing Features
+### 0.7.2 Financial Integrity Rules
 
-- **Project 1 REST API**: All master data access must be read-only via HTTP REST using `aiohttp`. No direct database connections. No mutations to upstream data. Authentication uses Project 1's existing system without modification
-- **Redis**: All Redis interactions must set appropriate TTLs per the specification (agent state: 24h, LLM queue: 1h, events: 7d, memory: 30d). The 2 GB memory limit with `allkeys-lru` eviction must be configured, and auto-cleanup must run at 3,600-second intervals
-- **LLM Providers**: The `LLMClient` must support Anthropic, OpenAI, and Azure OpenAI through a common async interface. Provider selection is environment-driven. Fallback from primary to secondary model must be automatic on persistent failures
+- **GL Balance Invariant**: Every journal entry MUST satisfy `SUM(debits) = SUM(credits)` within `$0.01` tolerance (`Decimal("0.01")`). The `GLPostingEngine` MUST reject any unbalanced entry before persistence.
+- **Continuous Trial Balance**: After every batch of transactions, the cumulative trial balance MUST equal zero within `$0.01`. This is verified by `GLPostingEngine` after each posting.
+- **Decimal Precision**: ALL financial calculations MUST use Python `Decimal` type with `getcontext().prec = 28` and `rounding = ROUND_HALF_UP`. Never use `float` for monetary amounts.
+- **Atomicity**: If ANY step in a multi-step GL posting fails, the ENTIRE transaction MUST be rolled back using SQLAlchemy's session rollback. No partial postings are permitted.
+- **Balance Sheet Equation**: `Assets = Liabilities + Equity` MUST hold at all times within `$0.01`.
+- **Sub-ledger Reconciliation**: AR sub-ledger, AP sub-ledger, and Inventory sub-ledger MUST reconcile to their respective GL control accounts within `$0.01` at all times.
+- **Normal Balance Direction**: Asset and Expense accounts increase with debits; Liability, Equity, and Revenue accounts increase with credits. The `AccountBalanceManager` MUST enforce this.
 
-### 0.7.3 Performance and Scalability Constraints
+### 0.7.3 Performance Requirements
 
-- **Agent creation rate**: ≥ 50 agents per second — agent initialization must be lightweight with lazy resource loading
-- **Decision latency p95**: < 5 seconds — the Decision Engine must short-circuit the LLM Layer when statistical-only decisions are sufficient
-- **Workflow routing**: < 500 milliseconds — the WorkflowOrchestrator must use O(1) or O(log n) agent lookup, not linear scans
-- **Concurrent agents**: ≥ 20 — all agent loops must be fully async with no blocking I/O calls
-- **Concurrent workflows**: ≥ 100 — workflow tracking must use thread-safe data structures
-- **LLM budget enforcement**: Hard cap at $100/month — the `LLMBudgetManager` must block all requests when the budget is exhausted, not merely warn
-- **Memory limits**: Max 50 agents × 700 KB = 35 MB total agent memory in Redis — memory cleanup must be proactive, not reactive
+- **P2P Transaction Rate**: Generate complete P2P cycles ≥ 50/minute
+- **O2C Transaction Rate**: Generate complete O2C cycles ≥ 60/minute
+- **GL Posting Rate**: Post journal entries to GL ≥ 200/minute
+- **Transaction Completion Rate**: ≥ 99.5% of transactions reach completed state
+- **Concurrent Transactions**: Support ≥ 100 concurrent transaction workflows
+- **Transaction Throughput**: Process ≥ 2,000 transactions/hour sustained
+- **Rework Loop Completion**: Within 30 seconds per transaction
+- **1-month Simulation**: Complete in 4–8 hours
 
-### 0.7.4 Security Requirements
+### 0.7.4 Error Handling Conventions
 
-- **API keys must never be logged or serialized**. The `LLM_API_KEY` environment variable must be treated as a secret. Structured logs from `structlog` must explicitly exclude API key fields
-- **All LLM request/response content should be logged at INFO level** for auditability, but API keys and authentication headers must be scrubbed from log output
-- **Redis connections should use authentication** when available in production environments. Connection URLs containing credentials must not appear in logs
-- **No agent memory data leaves the application boundary for embedding purposes**. The `all-MiniLM-L6-v2` model runs locally, and this invariant must be maintained — no external embedding API calls
+- **Custom Exception Hierarchy**: All P3 exceptions MUST extend `TransactionError`. Each error domain has its own exception class (`BalanceError`, `ThreeWayMatchError`, etc.) to enable targeted catch/retry logic.
+- **Retry Policies**: Every transaction operation MUST have an explicit retry policy from the user-specified retry table (8 operations). Use `tenacity` decorators with the specified attempt counts, backoff strategies, and timeouts.
+- **Circuit Breakers**: Three circuit breakers MUST be implemented for GL posting (10 failures, 60s recovery), discrepancy injection (20 failures, 30s recovery), and rework loop (50 failures, 120s recovery). Each has a specified fallback action.
+- **Timeout Enforcement**: ALL 13 operation types MUST have explicit timeout values from the user-specified timeout matrix. Use `asyncio.wait_for()` or `tenacity` stop conditions to enforce them.
+- **Fallback Behavior**: Each operation's fallback MUST match the specification exactly — skip transaction, rollback, mark as exception, escalate to admin, or halt with manual intervention required.
 
-### 0.7.5 Testing and Quality Standards
+### 0.7.5 Discrepancy Injection Rules
 
-- **Unit test coverage target: ≥ 80%** across all source modules
-- **All LLM integration tests must use mocked API responses** — no live API calls in the test suite
-- **Redis tests must use `fakeredis`** or equivalent in-memory mock — no external Redis dependency for testing
-- **Statistical model tests must verify output distributions** match expected parameters (e.g., mean and standard deviation within confidence intervals for sufficiently large sample sizes)
-- **Async tests must use `pytest-asyncio`** with proper event loop management
-- **All agent tests must verify state transitions** (IDLE → THINKING → ACTING → IDLE, and error paths)
+- **Rate Control**: Actual injection rate MUST be within ±1% of the configured target rate (default 2%)
+- **Difficulty Distribution**: Easy (70%) / Medium (30%) / Hard (0%) — ±5% tolerance on distribution
+- **Parameter Bounds**: ALL discrepancy parameters MUST fall within configured bounds (e.g., duplicate_invoice_days_apart: 1–90, price_variance_percent: 1%–50%)
+- **Auto-Adjust**: When `auto_adjust_to_bounds` is True, parameters that fall outside bounds MUST be automatically clamped to the nearest bound value
+- **Ground Truth Coverage**: 100% of injected discrepancies MUST have a corresponding ground truth record with all 16 schema fields populated
+- **Transaction Linkage**: Every ground truth record MUST reference valid transaction IDs in the `transaction_ids` list
 
-### 0.7.6 Logging and Observability Standards
+### 0.7.6 Testing Conventions
 
-- **All logging uses `structlog` to stdout in structured JSON format** — no file handlers, no external monitoring integrations
-- **Every agent decision must produce a structured log entry** including: agent_id, agent_role, decision_type, context summary, decision result, and duration_seconds
-- **Every LLM request must produce request and response log entries** including: request_id, model, token counts, cost, duration, and success status
-- **Every workflow routing must produce a log entry** including: workflow_id, transaction_type, assigned agent_id, and queue depth
-- **Daily summary logs are mandatory** including: simulation_date, transactions_generated, agents_active, average_utilization, LLM_requests, LLM_cost, and day_duration
+- **Unit Test Coverage**: ≥ 80% line coverage for all transaction logic (matching Project 2's standard)
+- **Integration Tests**: Full P2P and O2C cycle verification tests that assert GL balance, artifact completeness, and event publication
+- **Critical Financial Test Scenarios** (mandatory — from user specification):
+  - GL Balance Zero: `SUM(Debits) - SUM(Credits) == $0.00` after batch of 1,000 mixed transactions
+  - Concurrent Posting: 20 agents post to 'Cash' account simultaneously; final balance equals sum of inputs
+  - Period Close: Transactions dated Dec 31 are posted; Jan 1 transactions blocked until period open
+  - Overpayment: Payment of $1,100 on $1,000 invoice → $0 Invoice Balance + $100 Unapplied Cash (no negative balance)
+  - Rollback: DB error during 'Post Line 2' causes 'Post Line 1' to disappear (Atomicity)
+- **Property-Based Testing**: Use `hypothesis` for transaction generation validation — ensure amounts are always positive, GL entries always balance, sequences are never violated regardless of input
+- **Mock Strategy**: Use `fakeredis` for Redis operations, `AsyncMock` for Project 1 database sessions, and fixture factories for sample transaction data
+
+### 0.7.7 Logging Specification
+
+- **Log Levels by Component**: P2P/O2C Generators at DEBUG (dev) / INFO (prod), GL Posting at INFO (dev) / WARNING (prod), Discrepancy Injection at DEBUG (dev/staging) / INFO (prod), Rework Loop at INFO (dev) / WARNING (prod), Period Close at INFO (all environments)
+- **Log Retention**: Development 7 days, Staging 14 days, Production 30 days; daily rotation at midnight UTC; gzip compression after 7 days
+- **Transaction-Specific Logging**: Every generated transaction MUST log: `transaction_type`, `transaction_id`, `vendor_id`/`customer_id`, `amount`, `match_status` (if applicable), `has_discrepancy`, `discrepancy_type` (if applicable), `gl_entries` count, `duration_ms`
+- **Output Format**: JSON structured logging to stdout only (Docker container log aggregation via json-file driver)
 
 ## 0.8 References
 
 ### 0.8.1 Repository Files and Folders Searched
 
-The following files and folders were systematically retrieved and analyzed to derive all conclusions documented in this Agent Action Plan:
+The following files and folders were searched and analyzed across the Project 2 codebase to derive the conclusions documented in this Agent Action Plan:
 
-| Path | Type | Lines Analyzed | Content Summary |
-|------|------|----------------|-----------------|
-| `/` (root) | Folder | N/A | Repository root — confirmed as containing only `README.md` |
-| `README.md` | File | 1–2,349 (full) | Complete Project 2 specification: project objectives, success criteria, in-scope/out-of-scope boundaries, 7 feature specifications with code examples, technology stack, module structure, error handling, logging, constraint parameters, validation sequences, architecture context, deliverables checklist, development guidelines, acceptance criteria, and reference specifications |
+**Root-Level Files:**
 
-**Tech spec sections retrieved for cross-reference:**
+| File Path | Contents Summary |
+|-----------|-----------------|
+| `README.md` | Project 2 overview, architecture, and specification |
+| `.env.example` | Environment template: LLM_PROVIDER (anthropic), LLM_MODEL (claude-sonnet-4-20250514), LLM_FALLBACK_MODEL (claude-haiku-4-20250514), LLM_API_KEY, LLM_MAX_TOKENS (1000), LLM_TEMPERATURE (0.7), REDIS_URL (redis://localhost:6379/0) |
+| `pyproject.toml` | Package `synthetic-erp-agent-engine` 0.1.0, Python ≥3.11, dev deps (pytest, fakeredis, aioresponses), coverage ≥80% |
+| `requirements.txt` | 13 production dependencies (anthropic, openai, aiohttp, redis, numpy, scipy, faker, pydantic, structlog, python-dateutil, holidays, tenacity, sentence-transformers) |
+| `requirements-dev.txt` | Test dependencies (pytest ≥8.0.0, pytest-asyncio ≥0.23.0, pytest-cov ≥4.1.0, fakeredis ≥2.21.0, aioresponses ≥0.7.6) |
+| `pytest.ini` | Test configuration: asyncio_mode=auto, strict-markers, markers (asyncio, slow, integration) |
 
-| Section | Purpose |
-|---------|---------|
-| 1.1 Executive Summary | Validated project overview, stakeholder relationships, and value proposition |
-| 2.1 Feature Catalog | Confirmed all 7 features (F-001 through F-007) with metadata, dependencies, and technical context |
-| 3.1 Programming Languages | Verified Python 3.11+ as sole language with platform exclusion rationale |
-| 3.2 Frameworks & Libraries | Confirmed all 13 production dependencies with versions, purposes, and selection justification |
-| 5.1 High-Level Architecture | Validated 4-layer architecture, data flow patterns, integration points, and caching tiers |
-| 7.1 Overview | Confirmed no UI component — purely backend engine |
+**Application Source Files (`app/`):**
+
+| File / Folder Path | Contents Summary |
+|-----------|-----------------|
+| `app/orchestration/transaction_orchestrator.py` | `TransactionOrchestrator` class — lifecycle management (register → add_artifact → check_completeness → mark_complete); `REQUIRED_ARTIFACTS` mapping for 8 transaction types; `TransactionStatus` enum (REGISTERED, IN_PROGRESS, AWAITING_ARTIFACTS, COMPLETE, FAILED, CANCELLED); parent-child chaining |
+| `app/orchestration/workflow_orchestrator.py` | `WorkflowOrchestrator` — `ROLE_MAPPING` (8 transaction types → eligible agent roles); `WorkflowStatus` lifecycle (PENDING → ASSIGNED → IN_PROGRESS → AWAITING_APPROVAL → COMPLETED/FAILED/RETRYING/CANCELLED); retry policy (3 attempts) |
+| `app/orchestration/approval_system.py` | `ApprovalSystem` — PO thresholds ($5K/$25K/$100K), vendor invoice thresholds ($10K/$50K/$100K), journal entry thresholds ($50K); escalation hierarchy (Clerk → Manager → Controller → CFO); max chain depth 3 |
+| `app/orchestration/time_controller.py` | `TimeController` — day-by-day advancement; `PeriodClosing`/`PeriodClosed` event emission |
+| `app/orchestration/fiscal_calendar.py` | `FiscalCalendar` — configurable start month; monthly/quarterly periods; OPEN → CLOSING → CLOSED states |
+| `app/orchestration/business_calendar.py` | `BusinessCalendar` — US Federal holidays (2024–2026); working hours 08:00–17:00; lunch 12:00–13:00 |
+| `app/events/event_types.py` | 8 event types: TransactionCreated, TransactionCompleted, ApprovalRequired, ApprovalCompleted, DocumentGenerated, PeriodClosing, PeriodClosed, DiscrepancyDetected; `EVENT_TYPE_REGISTRY` mapping; `Event` base dataclass with UUID, payload, timestamp |
+| `app/events/event_bus.py` | Dual-mode EventBus (in-memory asyncio.PriorityQueue / Redis Pub/Sub); 4 priority levels; 1s publish timeout, 5s handler timeout |
+| `app/events/event_store.py` | Redis JSONB event persistence with UUID indexing; 7-day TTL |
+| `app/simulation/simulation_engine.py` | `SimulationEngine` composition root; 5-step daily pipeline (Advance Day → Generate Interactions → Route Transactions → Process Agent Work → Persist & Finalize); constructor injection for all 7 subsystems |
+| `app/simulation/simulation_metrics.py` | `DailyMetricsSnapshot`, `MonthlyMetricsAggregate`; SLA targets (<30s/day, 2000 txn/month) |
+| `app/simulation/day_context.py` | `DayContext` — per-day validated state container |
+| `app/agents/agent_registry.py` | 50-agent cap; role-based lookup; 3-timeout restart (60s cooldown); Redis persistence (24h TTL) |
+| `app/agents/base_agent.py` | `BaseAgent` abstract class; 5 lifecycle states; work queue (100 items max) |
+| `app/agents/decision_engine.py` | 4-layer inviolable pipeline: Statistical → LLM → Validation → Deterministic |
+| `app/agents/action_registry.py` | 14 registered ERP actions (P2P: 7, O2C: 4, Financial: 3) |
+| `app/agents/agent_config.py` | `AgentConfig` Pydantic V2 model; personality traits (thoroughness, risk_tolerance, efficiency, compliance) [0.0–1.0] |
+| `app/agents/agent_memory.py` | Dual-stream memory (observations: 1000, reflections: 100); all-MiniLM-L6-v2 embeddings; Redis persistence (30d TTL) |
+| `app/agents/specialized/*.py` | 12 agent implementations: AP Clerk, AP Manager, AR Clerk, AR Manager, Purchasing Agent, Purchasing Manager, Warehouse Clerk, Warehouse Manager, Accountant, Senior Accountant, Controller, CFO |
+| `app/statistical/amount_distributions.py` | Log-normal distributions (scale=5000, shape=1.2); min $100, max $500K |
+| `app/statistical/payment_timing_model.py` | 5-segment mixture: early_discount (20%), prompt (30%), on_time (25%), late (15%), problem (10%) |
+| `app/statistical/order_frequency_model.py` | Poisson with day-of-week and tier multipliers |
+| `app/statistical/selection_models.py` | Pareto 80/20 distribution; 70/30 repeat-to-new split |
+| `app/external_world/*.py` | CustomerSimulator, VendorSimulator, BankSimulator; tiered entity pools (Strategic 10%, Standard 30%, Transactional 60%) |
+| `app/errors/error_handlers.py` | LLMErrorHandler, AgentErrorHandler, WorkflowErrorHandler; credential scrubbing |
+| `app/llm/*.py` | LLMClient (Anthropic + OpenAI), LLMQueue (Redis Streams), LLMBudgetManager ($100/month cap), PromptManager (6 templates), ResponseParser |
+
+**Configuration Files (`config/`):**
+
+| File Path | Contents Summary |
+|-----------|-----------------|
+| `config/agents/agent_roles.yaml` | 12 agent role templates with department, personality trait ranges, permissions |
+| `config/llm/llm_config.yaml` | LLM provider config, rate limits, circuit breaker, retry settings |
+| `config/statistical/amount_distributions.yaml` | Log-normal distribution parameters per transaction type |
+| `config/statistical/payment_timing.yaml` | 5-segment mixture model weights and parameters |
+| `config/workflows/approval_thresholds.yaml` | PO, vendor invoice, journal entry approval tier definitions |
+
+**Prompt Templates (`prompts/`):**
+
+| File Path | Contents Summary |
+|-----------|-----------------|
+| `prompts/approve_transaction.yaml` | Approval decision prompt with persona/trait placeholders and JSON output schema |
+| `prompts/generate_description.yaml` | Description generation prompt |
+| `prompts/handle_exception.yaml` | Exception handling prompt |
+| `prompts/match_documents.yaml` | 3-way document matching prompt |
+| `prompts/process_vendor_invoice.yaml` | AP clerk invoice processing prompt |
+| `prompts/reconcile_account.yaml` | GL reconciliation prompt |
+
+**Test Files (`tests/`):**
+
+| File Path | Contents Summary |
+|-----------|-----------------|
+| `tests/conftest.py` | Shared fixtures (mock Redis, mock LLM, mock EventBus, agent factories) |
+| `tests/test_orchestration/test_transaction_orchestrator.py` | TransactionOrchestrator lifecycle tests |
+| `tests/test_orchestration/test_workflow_orchestrator.py` | WorkflowOrchestrator routing and lifecycle tests |
+| `tests/test_orchestration/test_approval_system.py` | Approval threshold and escalation tests |
+| `tests/test_orchestration/test_time_controller.py` | Time advancement and period boundary tests |
+| `tests/test_simulation/test_simulation_engine.py` | Multi-day simulation pipeline tests |
+| `tests/test_agents/*.py` | Agent system tests (base_agent, decision_engine, action_registry, agent_config, agent_memory, specialized_agents) |
+| `tests/test_events/*.py` | EventBus and EventStore tests |
+| `tests/test_llm/*.py` | LLM client, queue, monitor, prompt manager, response parser tests |
+| `tests/test_statistical/*.py` | Amount distribution, payment timing, order frequency, selection model tests |
+| `tests/test_external_world/*.py` | Entity manager, behavior profiles, simulator tests |
+| `tests/test_errors/*.py` | Error handler tests |
+
+**Tech Spec Sections Retrieved:**
+
+| Section | Key Findings |
+|---------|-------------|
+| 1.1 Executive Summary | Project 2 is Phase 2 of a 4-phase platform; hybrid decision-making (statistical + LLM); 12 agents, 1,884 tests |
+| 2.1 Feature Catalog | 7 features (F-001 through F-007): Agent System, LLM Integration, Workflow Orchestration, Time Controller, External World, Statistical Models, Event System |
+| 3.1 Programming Languages | Python 3.11+ sole language; YAML for config; JSON for logging/events |
+| 3.2 Frameworks & Libraries | 13 production dependencies with exact minimum versions |
+| 5.2 Component Details | Detailed specifications for all 10 subsystems including event types, decision pipeline, approval chains |
+| 6.1 Core Services Architecture | Layered event-driven monolith; composition root pattern; dual-mode EventBus; 4-level fault isolation; LLM resilience stack |
+| 6.2 Database Design | Redis-only persistence (~150MB of 2GB); 5 data domains; TTL-based cleanup |
+| 6.6 Testing Strategy | pytest-based, 1,884 tests, 26 files, 8 packages; fakeredis + aioresponses; ≥80% coverage |
 
 ### 0.8.2 Attachments
 
-| Attachment | File Name | Format | Size | Summary |
-|------------|-----------|--------|------|---------|
-| 1 | `PROJECT_2_PROMPT.pdf` | PDF | 146,736 bytes | The primary project specification document for Project 2: Agent & Orchestration Engine. Contains the complete requirements for building an AI-powered agent and orchestration system that simulates realistic ERP employee behavior, including specifications for 7 subsystems (Agent System, LLM Integration, Workflow Orchestration, Time Controller, External World Simulation, Statistical Models, Event System), detailed code examples in Python, module structure, error handling strategies, performance constraints, validation pipelines, and integration architecture with Projects 1, 3, and 4. This document's content is reflected in the repository's `README.md` file. |
+| Attachment | File Name | Contents Summary |
+|------------|-----------|-----------------|
+| Attachment 1 | `PROJECT_3_PROMPT_REVISED.pdf` | Complete Project 3 specification (197,507 bytes) — Transaction Workflows & Discrepancies for the Synthetic ERP Data Generation Platform. Contains: project objective and deliverables, 24 success criteria, in-scope components (P2P engine, O2C engine, GL integration, discrepancy injection, rework loop, period close), out-of-scope declarations, technology stack with pinned versions, error handling specification (exception hierarchy, retry policies, timeout matrix, circuit breakers), logging specification (JSON format, log levels, retention), constraint parameters (processing limits, discrepancy bounds, rework limits, financial tolerances, batch limits), transaction generation architecture (factory pattern, discrepancy examples, rework loop implementation), validation sequence framework (5-step transaction validation, rework loop validation), architecture context (integration with Projects 1 & 2), module structure, deliverables checklist, acceptance criteria, and reference specifications |
 
-### 0.8.3 External References
+### 0.8.3 External URLs and Resources
 
-| Reference | Type | Relevance |
-|-----------|------|-----------|
-| Anthropic Claude API Documentation | External API docs | `LLMClient` implementation for `_complete_anthropic()` using `anthropic.AsyncAnthropic` |
-| OpenAI API Documentation | External API docs | `LLMClient` implementation for `_complete_openai()` using `openai.AsyncOpenAI` |
-| Redis Streams Documentation | External API docs | `LLMQueue` implementation using XADD/XREADGROUP consumer group pattern |
-| SciPy `stats` Module Reference | Library docs | Statistical distribution implementations (lognorm, norm, poisson, pareto) |
-| sentence-transformers `all-MiniLM-L6-v2` Model Card | Model documentation | Agent memory embedding (384-dimensional vectors, cosine similarity retrieval) |
-| `holidays` Python Package Reference | Library docs | US Federal holiday calendar (2024–2026) for BusinessCalendar |
+No Figma URLs were provided for this project. No external API documentation URLs were specified beyond the libraries listed in the dependency inventory. The following reference specification documents are cited by the user but are external to this repository and were not directly inspected:
 
-### 0.8.4 Specification Cross-References
-
-The following specification documents are referenced in the project README (`README.md`, lines 2336–2347) as upstream sources for implementation details:
-
-| Document | Scope Covered |
-|----------|---------------|
-| `AGENT_ARCHITECTURE.md` | Agent structure, roles, and memory system |
-| `AGENT_DECISION_SPEC.md` | Decision logic, LLM prompts, hybrid pipeline |
-| `ORCHESTRATION_DESIGN.md` | Workflow orchestration and approval chains |
-| `STATISTICAL_MODELS_SPEC.md` | Payment timing, amounts, and selection distributions |
-| `EXTERNAL_ENTITIES_SPEC.md` | Customer/vendor/bank simulation and behavior profiles |
-| `FINANCIAL_GROUNDING_SPEC.md` | Financial targets and grounding parameters |
+- `DISCREPANCY_CATALOG.md` — All 65+ discrepancy types (35+ for MVP)
+- `GROUND_TRUTH_SPEC.md` — Ground truth schemas
+- `REWORK_FLOW_SPEC.md` — Intelligent rework loop
+- `DATA_CONSISTENCY_SPEC.md` — Integrity constraints
+- `VALIDATION_FRAMEWORK_SPEC.md` — Validation rules
 
