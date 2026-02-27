@@ -33,6 +33,71 @@
 
 ---
 
+## 🚀 GETTING STARTED
+
+### Prerequisites
+
+- **Python 3.11+** (tested with 3.11.7 and 3.12.x)
+- **Redis** (optional — tests use `fakeredis`; required for production event persistence and agent state caching)
+- **PostgreSQL** (optional — tests use mocks/fixtures; required for production transaction persistence via Project 1's database layer)
+
+### Installation
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd <repository-directory>
+
+# Create and activate a virtual environment
+python3 -m venv venv
+source venv/bin/activate    # Linux/macOS
+# venv\Scripts\activate     # Windows
+
+# Install production dependencies
+pip install -r requirements.txt
+
+# Install development/test dependencies (includes production deps)
+pip install -r requirements-dev.txt
+```
+
+### Configuration
+
+```bash
+# Copy the environment template and configure
+cp .env.example .env
+
+# Edit .env with your settings (LLM API keys, Redis URL, etc.)
+# See the "New Environment Variables" section below for all Project 3 variables.
+```
+
+### Running Tests
+
+```bash
+# Run the full test suite
+python -m pytest tests/ -v --tb=short
+
+# Run only Project 3 transaction tests
+python -m pytest tests/test_transactions/ -v
+
+# Run only discrepancy injection tests
+python -m pytest tests/test_discrepancies/ -v
+
+# Run only rework loop tests
+python -m pytest tests/test_rework/ -v
+
+# Run with coverage report
+python -m pytest tests/ --cov=app --cov-report=term-missing
+```
+
+### Compilation Check
+
+```bash
+# Verify all source files compile without errors
+find app/ -name "*.py" -type f -exec python -m py_compile {} \;
+```
+
+---
+
 ## ✅ SUCCESS CRITERIA (20 Measurable Thresholds)
 
 ### Agent System Performance (5 criteria)
@@ -2386,6 +2451,8 @@ synthetic_erp_platform/
 
 ## 📚 REFERENCE SPECIFICATIONS
 
+> **Note:** The following specification documents are external upstream design documents that informed the implementation of this project. They are **not included** in this repository — they reside in the project's design documentation system and are referenced here for traceability purposes only.
+
 This project implements specifications from:
 
 1. **AGENT_ARCHITECTURE.md** - Agent structure, roles, memory
@@ -2601,13 +2668,13 @@ app/rework/                                # Intelligent rework loop
 | `GL_POSTING_BATCH_SIZE` | `500` | Number of GL entries per posting batch |
 | `DISCREPANCY_INJECTION_ENABLED` | `true` | Enable/disable discrepancy injection |
 | `DISCREPANCY_DEFAULT_RATE` | `0.02` | Default discrepancy injection rate (2%) |
-| `DISCREPANCY_DIFFICULTY_DISTRIBUTION` | `easy:0.70,medium:0.30,hard:0.00` | Difficulty distribution for injected discrepancies |
+| `DISCREPANCY_DIFFICULTY_DISTRIBUTION` | `0.70,0.30,0.00` | Difficulty distribution for injected discrepancies (easy,medium,hard) |
 | `REWORK_LOOP_ENABLED` | `true` | Enable/disable the intelligent rework loop |
 | `REWORK_LOOP_MAX_ATTEMPTS` | `3` | Maximum fix attempts per transaction |
 | `REWORK_LOOP_TIMEOUT_SECONDS` | `30` | Timeout per rework attempt |
 | `REWORK_ESCALATION_THRESHOLD` | `0.05` | Failure rate threshold for escalation (5%) |
 | `CONCURRENT_TRANSACTION_LIMIT` | `100` | Maximum concurrent transaction workflows |
-| `ENABLE_TRANSACTION_CACHING` | `false` | Enable caching of transaction generation results |
+| `ENABLE_TRANSACTION_CACHING` | `true` | Enable caching of transaction generation results |
 
 ---
 
@@ -2803,6 +2870,8 @@ class ConcurrencyError(TransactionError):
 ---
 
 ## 📚 REFERENCE SPECIFICATIONS
+
+> **Note:** The following specification documents are external upstream design documents that informed the implementation of this project. They are **not included** in this repository — they reside in the project's design documentation system and are referenced here for traceability purposes only.
 
 ### Project 2 References
 1. **AGENT_ARCHITECTURE.md** - Agent structure, roles, memory
